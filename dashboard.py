@@ -189,7 +189,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 📡 Datos")
-    use_real = st.toggle("Datos reales", value=True,
+    use_real = st.toggle("Datos reales", value=False,
                           help="ON = Binance/Yahoo Finance | OFF = demo offline")
 
     st.markdown("### 🎯 Activo")
@@ -246,21 +246,43 @@ for k, v in [("last_key",""), ("alerts_sys",None), ("ai_engine",None),
 if st.session_state.alerts_sys is None: st.session_state.alerts_sys = RegimeAlertSystem()
 if st.session_state.ai_engine  is None: st.session_state.ai_engine  = AITradingSignal()
 
-if train_btn or st.session_state.last_key != cache_key:
+if train_btn:
     with st.spinner(f"⏳ Entrenando HMM para {symbol} ({n_states} estados)..."):
         try:
             system, data = train_system(symbol, n_states, auto_select, use_real, cache_key)
             st.session_state.system   = system
             st.session_state.data     = data
-            st.session_state.last_key = cache_key   # solo setear si tuvo éxito
+            st.session_state.last_key = cache_key
             st.success(f"✅ {len(system.models)} modelos entrenados · {n_states} regímenes")
         except Exception as e:
-            st.error(f"❌ Error de entrenamiento: {e}")
+            st.error(f"❌ Error: {e}")
             st.stop()
 
-# Guardia: si por algún motivo el sistema no está disponible
+# Pantalla de bienvenida si aún no se entrenó
 if st.session_state.system is None:
-    st.info("Presiona **🚀 Entrenar / Actualizar** para iniciar.")
+    T_welcome = THEMES[theme_name]
+    st.markdown(f"""
+    <div style="text-align:center;padding:60px 20px">
+        <div style="font-size:64px;margin-bottom:16px">🤖</div>
+        <div style="font-size:28px;font-weight:700;color:{T_welcome['text_primary']};margin-bottom:12px">
+            Trade Buddy v3.0
+        </div>
+        <div style="font-size:16px;color:{T_welcome['text_secondary']};margin-bottom:8px">
+            7 Regímenes HMM · Señal IA · Multi-Timeframe
+        </div>
+        <div style="font-size:13px;color:{T_welcome['text_tertiary']};margin-bottom:32px">
+            Selecciona un activo en el panel lateral y presiona
+        </div>
+        <div style="font-size:14px;color:{T_welcome['primaryColor']};font-weight:600;
+            border:2px solid {T_welcome['primaryColor']};border-radius:10px;
+            padding:12px 28px;display:inline-block">
+            🚀 Entrenar / Actualizar
+        </div>
+        <div style="margin-top:40px;font-size:12px;color:{T_welcome['text_tertiary']}">
+            Modo demo: datos sintéticos (sin internet) · Modo real: Binance + Yahoo Finance
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 system     = st.session_state.system
