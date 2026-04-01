@@ -187,6 +187,9 @@ with st.sidebar:
     T = THEMES[theme_name]
     st.markdown(apply_css(T), unsafe_allow_html=True)
 
+    # Aplicar CSS también al body principal (fuera del sidebar)
+    _css_applied = True
+
     st.divider()
     st.markdown("### 📡 Datos")
     use_real = st.toggle("Datos reales", value=False,
@@ -232,6 +235,9 @@ with st.sidebar:
     st.caption("Trade Buddy v3.0 · 7 Regímenes\nCrypto: Binance RT · Resto: Yahoo Finance\nPesos: 5m=1 · 15m=2 · 1h=3 · 4h=4 · 1d=5")
 
 
+# ─── Aplicar CSS al body principal también ───
+st.markdown(apply_css(T), unsafe_allow_html=True)
+
 # ─────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────
@@ -246,44 +252,23 @@ for k, v in [("last_key",""), ("alerts_sys",None), ("ai_engine",None),
 if st.session_state.alerts_sys is None: st.session_state.alerts_sys = RegimeAlertSystem()
 if st.session_state.ai_engine  is None: st.session_state.ai_engine  = AITradingSignal()
 
-if train_btn:
+# Auto-entrenar al cargar (datos demo = instantáneo, sin internet)
+# o re-entrenar si cambió la configuración o se presionó el botón
+needs_train = (st.session_state.system is None or
+               st.session_state.last_key != cache_key or
+               train_btn)
+
+if needs_train:
     with st.spinner(f"⏳ Entrenando HMM para {symbol} ({n_states} estados)..."):
         try:
             system, data = train_system(symbol, n_states, auto_select, use_real, cache_key)
             st.session_state.system   = system
             st.session_state.data     = data
             st.session_state.last_key = cache_key
-            st.success(f"✅ {len(system.models)} modelos entrenados · {n_states} regímenes")
         except Exception as e:
-            st.error(f"❌ Error: {e}")
+            st.error(f"❌ Error de entrenamiento: {e}")
+            st.info("Desactiva 'Datos reales' en el panel lateral para usar datos demo.")
             st.stop()
-
-# Pantalla de bienvenida si aún no se entrenó
-if st.session_state.system is None:
-    T_welcome = THEMES[theme_name]
-    st.markdown(f"""
-    <div style="text-align:center;padding:60px 20px">
-        <div style="font-size:64px;margin-bottom:16px">🤖</div>
-        <div style="font-size:28px;font-weight:700;color:{T_welcome['text_primary']};margin-bottom:12px">
-            Trade Buddy v3.0
-        </div>
-        <div style="font-size:16px;color:{T_welcome['text_secondary']};margin-bottom:8px">
-            7 Regímenes HMM · Señal IA · Multi-Timeframe
-        </div>
-        <div style="font-size:13px;color:{T_welcome['text_tertiary']};margin-bottom:32px">
-            Selecciona un activo en el panel lateral y presiona
-        </div>
-        <div style="font-size:14px;color:{T_welcome['primaryColor']};font-weight:600;
-            border:2px solid {T_welcome['primaryColor']};border-radius:10px;
-            padding:12px 28px;display:inline-block">
-            🚀 Entrenar / Actualizar
-        </div>
-        <div style="margin-top:40px;font-size:12px;color:{T_welcome['text_tertiary']}">
-            Modo demo: datos sintéticos (sin internet) · Modo real: Binance + Yahoo Finance
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
 
 system     = st.session_state.system
 data       = st.session_state.data
