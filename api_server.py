@@ -612,3 +612,166 @@ async def get_subscription(user_id: str):
         }
     except Exception as e:
         return {"active": False, "plan": "starter", "error": str(e)}
+
+
+# ============================================================
+# ===============  SISTEMA DE REFERIDOS  =====================
+# ============================================================
+#
+# Códigos de afiliado para creadores de contenido.
+# Cada código da 10% de descuento al usuario y genera
+# 20% de comisión para el creador (sobre el 1er pago).
+# Storage in-memory (migrar a Firestore cuando escale).
+# ------------------------------------------------------------
+
+REFERRAL_DISCOUNT_PCT = 10   # % descuento para el usuario
+REFERRAL_COMMISSION_PCT = 20  # % comisión para el creador (1er pago)
+
+# code -> { code, creatorEmail, creatorName, discount, commission,
+#           uses, active, conversions: [{userId, plan, amount, ts}] }
+_referral_codes: Dict[str, Dict] = {}
+
+
+class ReferralCreateRequest(BaseModel):
+    admin_email: str
+    code: str            # e.g. "CRYPTODAN" — uppercase recommended
+    creator_email: str
+    creator_name: str
+
+
+class ReferralValidateRequest(BaseModel):
+    code: str
+
+
+class ReferralConvertRequest(BaseModel):
+    code: str
+    user_id: str
+    user_email: str
+    plan: str
+    billing: str       # "monthly" | "annual"
+    amount: float      # final charged amount (after discount)
+
+
+def _normalize_code(code: str) -> str:
+    return code.strip().upper()
+
+
+@app.post("/api/referral/create")
+async def referral_create(req: ReferralCreateRequest):
+    """Admin creates a referral code for a content creator."""
+    if (req.admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    code = _normalize_code(req.code)
+    if not code or len(code) < 3:
+        raise HTTPException(status_code=400, detail="Code too short (min 3 chars)")
+    if code in _referral_codes:
+        raise HTTPException(status_code=409, detail="Code already exists")
+    _referral_codes[code] = {
+        "code": code,
+        "creator_email": req.creator_email.lower().strip(),
+        "creator_name": req.creator_name.strip(),
+        "discount_pct": REFERRAL_DISCOUNT_PCT,
+        "commission_pct": REFERRAL_COMMISSION_PCT,
+        "uses": 0,
+        "active": True,
+        "created_at": int(_time.time()),
+        "conversions": [],
+    }
+    return {"ok": True, "code": code}
+
+
+@app.post("/api/referral/validate")
+async def referral_validate(req: ReferralValidateRequest):
+    """Check if a referral code is valid. Called before checkout."""
+    code = _normalize_code(req.code)
+    rec = _referral_codes.get(code)
+    if not rec or not rec.get("active"):
+        raise HTTPException(status_code=404, detail="Código no válido o inactivo")
+    return {
+        "valid": True,
+        "code": code,
+        "creator_name": rec["creator_name"],
+        "discount_pct": rec["discount_pct"],
+        "message": f"¡Código válido! {rec['discount_pct']}% de descuento aplicado",
+    }
+
+
+@app.post("/api/referral/convert")
+async def referral_convert(req: ReferralConvertRequest):
+    """Record a successful conversion. Call after Stripe checkout completes."""
+    code = _normalize_code(req.code)
+    rec = _referral_codes.get(code)
+    if not rec:
+        return {"ok": False, "error": "Code not found"}
+    commission = round(req.amount * rec["commission_pct"] / 100, 2)
+    rec["uses"] += 1
+    rec["conversions"].append({
+        "user_id": req.user_id,
+        "user_email": req.user_email,
+        "plan": req.plan,
+        "billing": req.billing,
+        "amount": req.amount,
+        "commission": commission,
+        "ts": int(_time.time()),
+    })
+    return {
+        "ok": True,
+        "commission_earned": commission,
+        "total_uses": rec["uses"],
+    }
+
+
+@app.get("/api/referral/stats/{code}")
+async def referral_stats(code: str, creator_email: str):
+    """Creator checks their own code stats."""
+    c = _normalize_code(code)
+    rec = _referral_codes.get(c)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Code not found")
+    if rec["creator_email"] != creator_email.lower().strip() and \
+       creator_email.lower().strip() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    total_commission = sum(cv.get("commission", 0) for cv in rec["conversions"])
+    return {
+        "code": c,
+        "creator_name": rec["creator_name"],
+        "uses": rec["uses"],
+        "active": rec["active"],
+        "discount_pct": rec["discount_pct"],
+        "commission_pct": rec["commission_pct"],
+        "total_commission_usd": round(total_commission, 2),
+        "conversions": rec["conversions"],
+    }
+
+
+@app.get("/api/admin/referrals")
+async def admin_referrals(admin_email: str):
+    """Admin sees all referral codes and totals."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    result = []
+    for code, rec in _referral_codes.items():
+        total = sum(cv.get("commission", 0) for cv in rec["conversions"])
+        result.append({
+            "code": code,
+            "creator_name": rec["creator_name"],
+            "creator_email": rec["creator_email"],
+            "uses": rec["uses"],
+            "active": rec["active"],
+            "total_commission_usd": round(total, 2),
+        })
+    result.sort(key=lambda x: x["uses"], reverse=True)
+    return {"referrals": result, "count": len(result)}
+
+
+@app.post("/api/admin/referral/toggle")
+async def admin_referral_toggle(admin_email: str, code: str, active: bool):
+    """Admin activates/deactivates a referral code."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    c = _normalize_code(code)
+    rec = _referral_codes.get(c)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Code not found")
+    rec["active"] = active
+    return {"ok": True, "code": c, "active": active}
