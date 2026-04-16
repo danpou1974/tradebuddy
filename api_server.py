@@ -21,6 +21,8 @@ from typing import List, Optional, Dict
 
 from hmm_engine import RegimeHMM, build_features
 from data_fetcher import BinanceFetcher, fetch_ticker_universal, fetch_all_timeframes_universal
+from signal_engine import scan_and_emit, debug_scan, WATCHLIST
+from expo_push import send_push_batch, build_signal_message
 
 app = FastAPI(title="TradeBuddy API", version="1.0.0")
 
@@ -390,6 +392,185 @@ async def stripe_webhook(request: Request):
         # TODO: Notify user about failed payment
 
     return JSONResponse(content={"received": True})
+
+
+# ============================================================
+# ===============  BUDDY VIP SIGNALS  ========================
+# ============================================================
+#
+# Private educational signals for an invitation-only circle.
+# Storage is in-memory (upgrade to Firestore Admin when needed).
+# Push delivery via Expo Push Service (no API key required).
+# ------------------------------------------------------------
+
+ADMIN_EMAIL = "danpou1974@gmail.com"
+SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
+
+# user_id -> {token, lang, vip, email}
+_push_registry: Dict[str, Dict] = {}
+# list of signals (newest first), capped
+_signals_history: List[Dict] = []
+_SIGNALS_MAX = 200
+# user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
+_signal_tracking: Dict[str, Dict[str, Dict]] = {}
+
+
+class PushTokenRequest(BaseModel):
+    user_id: str
+    email: Optional[str] = ""
+    token: str
+    lang: str = "en"
+    vip: bool = False
+
+
+@app.post("/api/push-token")
+async def register_push_token(req: PushTokenRequest):
+    """Register / update an Expo push token for a user."""
+    if not req.token.startswith("ExponentPushToken"):
+        raise HTTPException(status_code=400, detail="Invalid Expo push token")
+    is_admin = (req.email or "").strip().lower() == ADMIN_EMAIL
+    _push_registry[req.user_id] = {
+        "token": req.token,
+        "lang": req.lang,
+        "vip": bool(req.vip) or is_admin,
+        "email": req.email or "",
+        "is_admin": is_admin,
+    }
+    return {"ok": True, "registered_users": len(_push_registry)}
+
+
+class VipToggleRequest(BaseModel):
+    admin_email: str
+    user_id: str
+    vip: bool
+
+
+@app.post("/api/admin/toggle-vip")
+async def admin_toggle_vip(req: VipToggleRequest):
+    if (req.admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    rec = _push_registry.get(req.user_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="User not found in registry")
+    rec["vip"] = bool(req.vip)
+    return {"ok": True, "user": {req.user_id: rec}}
+
+
+@app.get("/api/admin/users")
+async def admin_users(admin_email: str):
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {
+        "users": [{"user_id": uid, **info} for uid, info in _push_registry.items()],
+        "count": len(_push_registry),
+    }
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(admin_email: str):
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    vip_users = [u for u in _push_registry.values() if u.get("vip")]
+    took = 0; passed = 0
+    for uid, sigs in _signal_tracking.items():
+        for sid, d in sigs.items():
+            if d.get("action") == "took":
+                took += 1
+            elif d.get("action") == "passed":
+                passed += 1
+    return {
+        "total_users": len(_push_registry),
+        "vip_users": len(vip_users),
+        "signals_sent": len(_signals_history),
+        "took_count": took,
+        "passed_count": passed,
+        "watchlist": WATCHLIST,
+    }
+
+
+@app.get("/api/signals/list")
+async def signals_list(user_id: Optional[str] = None, limit: int = 50):
+    """Return recent signals. Only VIP users get the full feed."""
+    rec = _push_registry.get(user_id or "")
+    is_vip = bool(rec and (rec.get("vip") or rec.get("is_admin")))
+    if not is_vip:
+        # Return only a count so non-VIP can display teaser
+        return {"vip": False, "count": len(_signals_history), "signals": []}
+    return {"vip": True, "count": len(_signals_history), "signals": _signals_history[:limit]}
+
+
+class TrackRequest(BaseModel):
+    user_id: str
+    signal_id: str
+    action: str  # "took" or "passed"
+
+
+@app.post("/api/signal/track")
+async def track_signal(req: TrackRequest):
+    if req.action not in ("took", "passed"):
+        raise HTTPException(status_code=400, detail="action must be 'took' or 'passed'")
+    _signal_tracking.setdefault(req.user_id, {})[req.signal_id] = {
+        "action": req.action, "ts": int(_time.time()),
+    }
+    return {"ok": True}
+
+
+@app.post("/api/scan-signals")
+async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
+    """
+    Triggered by cron-job.org every 15 min.
+    Returns the new signals emitted in this run.
+    """
+    if x_scan_secret != SCAN_SECRET:
+        raise HTTPException(status_code=403, detail="Bad secret")
+
+    try:
+        new_signals = scan_and_emit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scan error: {e}")
+
+    delivered = []
+    for sig in new_signals:
+        sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
+        _signals_history.insert(0, sig)
+
+        # Dispatch per-language (group tokens by lang to preserve localization)
+        vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
+        by_lang: Dict[str, List[str]] = {}
+        for r in vip_records:
+            by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
+
+        push_results = []
+        for lang, tokens in by_lang.items():
+            msg = build_signal_message(sig, lang=lang)
+            res = await send_push_batch(
+                tokens=tokens,
+                title=msg["title"],
+                body=msg["body"],
+                data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
+                channel_id="vip-signals",
+            )
+            push_results.append({"lang": lang, **res})
+        delivered.append({"signal": sig, "push": push_results})
+
+    # Trim history
+    if len(_signals_history) > _SIGNALS_MAX:
+        del _signals_history[_SIGNALS_MAX:]
+
+    return {
+        "ok": True,
+        "new_signals": len(new_signals),
+        "vip_recipients": sum(1 for r in _push_registry.values() if r.get("vip") or r.get("is_admin")),
+        "delivered": delivered,
+    }
+
+
+@app.get("/api/scan-signals/debug")
+async def scan_signals_debug(admin_email: str):
+    """Run a dry scan (below threshold too) for admin visibility."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {"scan": debug_scan()}
 
 
 @app.get("/api/subscription/{user_id}")
