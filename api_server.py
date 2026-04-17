@@ -393,6 +393,8 @@ _signals_history: List[Dict] = []
 _SIGNALS_MAX = 200
 # user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
+# user_id -> list of price alert dicts
+_alerts_registry: Dict[str, List[Dict]] = {}
 
 
 class PushTokenRequest(BaseModel):
@@ -495,6 +497,130 @@ async def track_signal(req: TrackRequest):
     return {"ok": True}
 
 
+# ===== Price Alerts ==========================================================
+
+class AlertItem(BaseModel):
+    id: str
+    symbol: str          # "BTC/USDT" o "BTCUSDT"
+    targetPrice: float
+    condition: str       # "above" | "below"
+    category: str = "crypto"
+    active: bool = True
+
+class AlertsSyncRequest(BaseModel):
+    user_id: str
+    alerts: List[AlertItem]
+
+
+@app.post("/api/alerts/sync")
+async def sync_alerts(req: AlertsSyncRequest):
+    """El frontend sincroniza su lista completa de alertas al backend."""
+    _alerts_registry[req.user_id] = [a.dict() for a in req.alerts if a.active]
+    return {"ok": True, "stored": len(_alerts_registry[req.user_id])}
+
+
+@app.get("/api/alerts/{user_id}")
+async def get_user_alerts(user_id: str):
+    """Retorna las alertas activas de un usuario (útil para sincronía entre dispositivos)."""
+    return {"alerts": _alerts_registry.get(user_id, [])}
+
+
+async def fetch_binance_prices() -> Dict[str, float]:
+    """Obtiene todos los precios USDT de Binance en un solo request."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get("https://api.binance.com/api/v3/ticker/price")
+            if resp.status_code != 200:
+                return {}
+            prices: Dict[str, float] = {}
+            for item in resp.json():
+                sym = item["symbol"]
+                price = float(item["price"])
+                if sym.endswith("USDT"):
+                    base = sym[:-4]
+                    prices[f"{base}/USDT"] = price   # formato app: "BTC/USDT"
+                    prices[sym] = price              # formato Binance: "BTCUSDT"
+            return prices
+    except Exception as e:
+        print(f"[alerts] Binance price fetch error: {e}")
+        return {}
+
+
+async def check_and_send_price_alerts(prices: Dict[str, float]) -> Dict:
+    """
+    Compara alertas registradas contra precios actuales.
+    Envía push a los usuarios cuyas alertas se dispararon y las elimina del registro.
+    """
+    if not prices:
+        return {"checked": 0, "triggered": 0}
+
+    total_checked = 0
+    total_triggered = 0
+
+    for user_id, alerts in list(_alerts_registry.items()):
+        if not alerts:
+            continue
+
+        remaining = []
+        user_rec = _push_registry.get(user_id)
+        total_checked += len(alerts)
+
+        for alert in alerts:
+            symbol = alert.get("symbol", "")
+            current_price = prices.get(symbol)
+
+            if current_price is None:
+                remaining.append(alert)
+                continue
+
+            target = float(alert.get("targetPrice", 0))
+            condition = alert.get("condition", "above")
+            hit = (condition == "above" and current_price >= target) or \
+                  (condition == "below" and current_price <= target)
+
+            if hit:
+                total_triggered += 1
+                # Solo enviar push si el usuario tiene token registrado
+                if user_rec and user_rec.get("token"):
+                    arrow = "📈" if condition == "above" else "📉"
+                    verb  = "superó" if condition == "above" else "cayó bajo"
+                    try:
+                        await send_push_batch(
+                            tokens=[user_rec["token"]],
+                            title=f"{arrow} Alerta: {symbol}",
+                            body=f"{symbol} {verb} ${target:,.4g}. Precio actual: ${current_price:,.4g}",
+                            data={
+                                "type": "price-alert",
+                                "symbol": symbol,
+                                "targetPrice": target,
+                                "currentPrice": current_price,
+                            },
+                            channel_id="price-alerts",
+                        )
+                    except Exception as e:
+                        print(f"[alerts] push error for {user_id}: {e}")
+            else:
+                remaining.append(alert)
+
+        # Actualizar el registro sin las alertas disparadas
+        _alerts_registry[user_id] = remaining
+
+    return {"checked": total_checked, "triggered": total_triggered}
+
+
+@app.post("/api/alerts/check")
+async def manual_alert_check(x_scan_secret: Optional[str] = Header(default=None)):
+    """
+    Endpoint manual para revisar alertas (se puede llamar desde cron-job.org).
+    Puede ejecutarse con más frecuencia que scan-signals (cada 5 min).
+    """
+    if x_scan_secret != SCAN_SECRET:
+        raise HTTPException(status_code=403, detail="Bad secret")
+    prices = await fetch_binance_prices()
+    result = await check_and_send_price_alerts(prices)
+    return {"ok": True, **result, "users_with_alerts": len(_alerts_registry)}
+
+
 @app.post("/api/scan-signals")
 async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
     """
@@ -537,11 +663,22 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
     if len(_signals_history) > _SIGNALS_MAX:
         del _signals_history[_SIGNALS_MAX:]
 
+    # Verificar alertas de precio de todos los usuarios
+    alert_results = {"checked": 0, "triggered": 0}
+    if _alerts_registry:
+        try:
+            prices = await fetch_binance_prices()
+            alert_results = await check_and_send_price_alerts(prices)
+        except Exception as e:
+            print(f"[scan] alert check error: {e}")
+
     return {
         "ok": True,
         "new_signals": len(new_signals),
         "vip_recipients": sum(1 for r in _push_registry.values() if r.get("vip") or r.get("is_admin")),
         "delivered": delivered,
+        "alerts_checked": alert_results["checked"],
+        "alerts_triggered": alert_results["triggered"],
     }
 
 
