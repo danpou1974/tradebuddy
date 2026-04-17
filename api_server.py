@@ -395,6 +395,9 @@ _SIGNALS_MAX = 200
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
 # user_id -> list of price alert dicts
 _alerts_registry: Dict[str, List[Dict]] = {}
+# Error log (últimos 200 errores)
+_error_log: List[Dict] = []
+_ERROR_LOG_MAX = 200
 
 
 class PushTokenRequest(BaseModel):
@@ -495,6 +498,49 @@ async def track_signal(req: TrackRequest):
         "action": req.action, "ts": int(_time.time()),
     }
     return {"ok": True}
+
+
+# ===== Error Reporting =======================================================
+
+import time as _time_module
+
+class ErrorReport(BaseModel):
+    message: str
+    stack: Optional[str] = None
+    context: Optional[str] = None      # pantalla / acción
+    user_id: Optional[str] = None
+    app_version: Optional[str] = None
+    platform: Optional[str] = None     # "ios" | "android"
+
+
+@app.post("/api/errors/report")
+async def report_error(req: ErrorReport):
+    """Recibe errores del cliente y los guarda para revisión del admin."""
+    entry = {
+        "ts": int(_time_module.time()),
+        "message": req.message[:500],        # truncar para evitar abuse
+        "stack": (req.stack or "")[:2000],
+        "context": req.context,
+        "user_id": req.user_id,
+        "app_version": req.app_version,
+        "platform": req.platform,
+    }
+    _error_log.insert(0, entry)
+    if len(_error_log) > _ERROR_LOG_MAX:
+        del _error_log[_ERROR_LOG_MAX:]
+    # No levantamos excepción — el cliente no debe interrumpirse por un error de reporte
+    return {"ok": True}
+
+
+@app.get("/api/errors")
+async def get_errors(admin_email: str, limit: int = 50):
+    """Solo el admin puede ver los errores registrados."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {
+        "total": len(_error_log),
+        "errors": _error_log[:limit],
+    }
 
 
 # ===== Price Alerts ==========================================================
