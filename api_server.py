@@ -692,6 +692,7 @@ async def referral_validate(req: ReferralValidateRequest):
         "code": code,
         "creator_name": rec["creator_name"],
         "discount_pct": rec["discount_pct"],
+        "uses": rec.get("uses", 0),
         "message": f"¡Código válido! {rec['discount_pct']}% de descuento aplicado",
     }
 
