@@ -79,6 +79,7 @@ class ChatRequest(BaseModel):
     marketData: List[MarketItem] = []
     conversationHistory: List[ChatMessage] = []
     lang: str = "en"
+    userPlan: str = "starter"  # "starter" | "trader" | "elite"
 
 
 class ChatResponse(BaseModel):
@@ -88,7 +89,7 @@ class ChatResponse(BaseModel):
 
 # ===== System prompt builder =====
 
-def build_system_prompt(market_data: List[MarketItem], user_lang: str) -> str:
+def build_system_prompt(market_data: List[MarketItem], user_lang: str, user_plan: str = "starter") -> str:
     lang_instructions = {
         "es": "SIEMPRE responde en español.",
         "pt": "SEMPRE responda em português.",
@@ -103,57 +104,36 @@ def build_system_prompt(market_data: List[MarketItem], user_lang: str) -> str:
     }
     lang_instruction = lang_instructions.get(user_lang, "Respond in the same language as the user message.")
 
+    # Límites de respuesta según plan
+    is_premium = user_plan in ("trader", "elite")
+    max_words = 250 if is_premium else 100
+    detail_level = (
+        "Puedes dar análisis detallados de hasta 250 palabras cuando sea relevante."
+        if is_premium else
+        "Responde en máximo 2-3 oraciones directas (≤100 palabras). Si el usuario necesita más profundidad, sugiérele que actualice a plan Trader o Elite."
+    )
+
     market_context = ""
     if market_data:
-        market_context = "\n\n## DATOS DE MERCADO EN TIEMPO REAL (actualizados ahora mismo):\n\n"
-        for m in market_data[:20]:
+        market_context = "\n\nDATOS DE MERCADO:\n"
+        for m in market_data[:15]:
             change_sign = "+" if m.change24h > 0 else ""
-            confidence_pct = round(m.confidence * 100)
             market_context += (
-                f"**{m.symbol}** ({m.name}): Precio ${m.price}, "
-                f"Cambio 24h: {change_sign}{m.change24h}%, "
-                f"Régimen HMM: {m.regime} (confianza: {confidence_pct}%), "
-                f"Señal: {m.signal or 'N/A'}, "
-                f"Soporte: ${m.support or 'N/A'}, Resistencia: ${m.resistance or 'N/A'}, "
-                f"Volumen: {m.volume or 'N/A'}\n"
+                f"{m.symbol}: ${m.price} ({change_sign}{m.change24h}%) "
+                f"— {m.regime}, Soporte ${m.support or 'N/A'}, Resistencia ${m.resistance or 'N/A'}\n"
             )
 
-    return f"""Eres TradeBuddy AI, el asistente inteligente de análisis de mercados de la app TradeBuddy. Eres experto en trading, criptomonedas, forex, commodities, acciones y análisis técnico.
+    return f"""Eres TradeBuddy AI, asistente de análisis de mercados. Experto en crypto, forex, acciones y trading.
 
-## TU PERSONALIDAD:
-- Eres profesional pero amigable y accesible
-- Usas datos reales para fundamentar tus respuestas
-- Eres conciso pero completo — respuestas de 2-4 párrafos máximo
-- Usas emojis con moderación (📊 🟢 🔴 📈 📉)
-- NUNCA das consejos financieros directos — todo es educativo e informativo
-- Siempre recuerdas al usuario que haga su propia investigación (DYOR)
-
-## SISTEMA DE ANÁLISIS HMM (Hidden Markov Model):
-TradeBuddy usa un modelo HMM de 7 regímenes para detectar el estado del mercado:
-
-1. **Alcista Fuerte** 🟢🟢 — Tendencia alcista con alto momentum. Alta probabilidad de continuación.
-2. **Alcista** 🟢 — Tendencia positiva moderada. Momentum favorable.
-3. **Acumulación** 🟡 — Fase lateral-alcista. Posible preparación para movimiento alcista. Volumen creciente.
-4. **Lateral** ⚪ — Sin dirección clara. Consolidación. Esperar confirmación.
-5. **Distribución** 🟠 — Fase lateral-bajista. Posible preparación para caída. Volumen decreciente.
-6. **Bajista** 🔴 — Tendencia negativa moderada. Momentum desfavorable.
-7. **Bajista Fuerte** 🔴🔴 — Tendencia bajista con alto momentum. Alta volatilidad.
-
-## INDICADORES TÉCNICOS DISPONIBLES (30+):
-- Tendencia: RSI, MACD, EMA (20/50/200), ADX
-- Momentum: Stochastic K/D, CCI, Williams %R, MFI, ROC
-- Volatilidad: Bollinger Bands, ATR, Std Dev, Keltner Channels
-- Volumen: OBV, VWAP, Volume SMA, Chaikin MF, A/D Line
-
-## REGLAS IMPORTANTES:
+REGLAS:
 1. {lang_instruction}
-2. SIEMPRE incluye disclaimer: "Esto es solo con fines educativos, no constituye consejo financiero."
-3. Si te preguntan sobre un activo específico, usa los datos reales proporcionados abajo.
-4. Si no tienes datos de un activo, dilo honestamente.
-5. Puedes explicar conceptos de trading, análisis técnico, estrategias, gestión de riesgo, etc.
-6. NO inventes datos — si no tienes info, dilo.
-7. Mantén respuestas cortas y directas (máximo 300 palabras).
-8. Si el usuario pregunta algo no relacionado con trading/finanzas, puedes responder brevemente pero redirige a tu expertise.
+2. {detail_level}
+3. Usa datos reales del mercado cuando estén disponibles.
+4. NO inventes datos — si no tienes info, dilo en una línea.
+5. Incluye siempre al final: "⚠️ Solo educativo, no es consejo financiero."
+6. Sé directo, sin relleno, sin explicaciones largas de metodología interna.
+7. No menciones tecnología interna del sistema (modelos, algoritmos, etc.).
+8. Usa máximo 1-2 emojis por respuesta.
 {market_context}"""
 
 
@@ -169,7 +149,7 @@ async def chat(req: ChatRequest):
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
 
-    system_prompt = build_system_prompt(req.marketData, req.lang)
+    system_prompt = build_system_prompt(req.marketData, req.lang, req.userPlan)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -188,8 +168,8 @@ async def chat(req: ChatRequest):
                 json={
                     "model": MODEL,
                     "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 800,
+                    "temperature": 0.65,
+                    "max_tokens": 400 if req.userPlan in ("trader", "elite") else 180,
                     "top_p": 0.9,
                 },
             )
