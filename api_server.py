@@ -722,6 +722,28 @@ async def referral_convert(req: ReferralConvertRequest):
     }
 
 
+@app.get("/api/referral/by-email")
+async def referral_by_email(creator_email: str):
+    """Find a referral code by creator email. Used by the app to load creator dashboard."""
+    email = (creator_email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="creator_email required")
+    for code, rec in _referral_codes.items():
+        if rec.get("creator_email") == email:
+            total_commission = sum(cv.get("commission", 0) for cv in rec["conversions"])
+            return {
+                "code": code,
+                "creator_name": rec["creator_name"],
+                "uses": rec["uses"],
+                "active": rec["active"],
+                "discount_pct": rec["discount_pct"],
+                "commission_pct": rec["commission_pct"],
+                "total_commission_usd": round(total_commission, 2),
+                "conversions": rec["conversions"],
+            }
+    raise HTTPException(status_code=404, detail="No code found for this email")
+
+
 @app.get("/api/referral/stats/{code}")
 async def referral_stats(code: str, creator_email: str):
     """Creator checks their own code stats."""
