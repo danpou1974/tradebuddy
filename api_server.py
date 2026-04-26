@@ -386,6 +386,13 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
+# Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
+# Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
+VIP_EMAILS: set = {
+    "danpou1974@gmail.com",
+    "scimelorena@hotmail.com",
+}
+
 # user_id -> {token, lang, vip, email}
 _push_registry: Dict[str, Dict] = {}
 # list of signals (newest first), capped
@@ -413,11 +420,13 @@ async def register_push_token(req: PushTokenRequest):
     """Register / update an Expo push token for a user."""
     if not req.token.startswith("ExponentPushToken"):
         raise HTTPException(status_code=400, detail="Invalid Expo push token")
-    is_admin = (req.email or "").strip().lower() == ADMIN_EMAIL
+    clean_email = (req.email or "").strip().lower()
+    is_admin    = clean_email == ADMIN_EMAIL
+    is_vip_email = clean_email in VIP_EMAILS   # server-side whitelist (persiste en código)
     _push_registry[req.user_id] = {
         "token": req.token,
         "lang": req.lang,
-        "vip": bool(req.vip) or is_admin,
+        "vip": bool(req.vip) or is_admin or is_vip_email,
         "email": req.email or "",
         "is_admin": is_admin,
     }
@@ -477,7 +486,12 @@ async def admin_stats(admin_email: str):
 async def signals_list(user_id: Optional[str] = None, limit: int = 50):
     """Return recent signals. Only VIP users get the full feed."""
     rec = _push_registry.get(user_id or "")
-    is_vip = bool(rec and (rec.get("vip") or rec.get("is_admin")))
+    rec_email = (rec.get("email", "") if rec else "").strip().lower()
+    # VIP si: flag en registry, es admin, email en whitelist server, o email en whitelist aunque no esté en registry
+    is_vip = bool(
+        (rec and (rec.get("vip") or rec.get("is_admin")))
+        or rec_email in VIP_EMAILS
+    )
     if not is_vip:
         # Return only a count so non-VIP can display teaser
         return {"vip": False, "count": len(_signals_history), "signals": []}
