@@ -46,12 +46,30 @@ class CryptoFetcher:
     Fetcher multi-exchange para OHLCV de cripto.
     Prueba en orden: KuCoin → OKX → Bybit
     Binance bloquea IPs de Render y otros cloud providers.
+
+    Las instancias de exchange son singletons a nivel de clase para que
+    load_markets() se ejecute una sola vez al arrancar el servidor (~20s)
+    y los fetches posteriores tarden ~2-3s en vez de 22s.
     """
-    _EXCHANGES = [
-        lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000}),
-        lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000}),
-        lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "spot"}}),
+    _instances: dict = {}   # {"kucoin": ex, "okx": ex, ...}
+
+    _FACTORIES = [
+        ("kucoin", lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000})),
+        ("okx",    lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000})),
+        ("bybit",  lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000,
+                                        "options": {"defaultType": "spot"}})),
     ]
+
+    @classmethod
+    def _get_exchange(cls, name: str, factory):
+        if name not in cls._instances:
+            ex = factory()
+            try:
+                ex.load_markets()          # pre-carga una sola vez
+            except Exception:
+                pass
+            cls._instances[name] = ex
+        return cls._instances[name]
 
     def __init__(self, symbol="ETH/USDT"):
         self.symbol = symbol
@@ -59,15 +77,19 @@ class CryptoFetcher:
     def _fetch_raw(self, timeframe="1h", limit=500):
         interval  = BINANCE_TF.get(timeframe, "1h")
         last_err  = None
-        for factory in self._EXCHANGES:
+        for name, factory in self._FACTORIES:
             try:
-                ex  = factory()
+                ex  = self._get_exchange(name, factory)
                 raw = ex.fetch_ohlcv(self.symbol, timeframe=interval, limit=limit)
                 if raw and len(raw) >= 60:
-                    print(f"  [{ex.id.upper()}] {self.symbol} {timeframe} OK ({len(raw)} velas)")
+                    print(f"  [{name.upper()}] {self.symbol} {timeframe} OK ({len(raw)} velas)")
                     return raw
             except Exception as e:
                 last_err = e
+                # invalidar instancia si falla para re-crear en el próximo intento
+                cls_instances = CryptoFetcher._instances
+                if name in cls_instances:
+                    del cls_instances[name]
         raise Exception(f"Todos los exchanges fallaron para {self.symbol}: {last_err}")
 
     def fetch_ticker(self):

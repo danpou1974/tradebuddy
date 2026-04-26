@@ -31,7 +31,19 @@ from contextlib import asynccontextmanager
 async def lifespan(application):
     """Ejecuta un scan al iniciar para poblar _signals_history desde el arranque."""
     async def _startup_scan():
-        await asyncio.sleep(15)   # espera a que el servidor esté completamente listo
+        await asyncio.sleep(5)    # breve pausa para que el servidor esté listo
+        # Pre-cargar instancias de exchange (load_markets ~20s) antes del scan
+        try:
+            from data_fetcher import CryptoFetcher
+            loop = asyncio.get_event_loop()
+            def _preload():
+                for name, factory in CryptoFetcher._FACTORIES:
+                    CryptoFetcher._get_exchange(name, factory)
+                print("[startup] exchanges pre-cargados OK")
+            await loop.run_in_executor(None, _preload)
+        except Exception as e:
+            print(f"[startup] preload error: {e}")
+
         try:
             loop = asyncio.get_event_loop()
             new_sigs = await loop.run_in_executor(None, scan_and_emit)
