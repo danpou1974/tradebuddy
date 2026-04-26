@@ -1,7 +1,8 @@
 """
 data_fetcher.py
 ===============
-Crypto  → Binance via ccxt  (tiempo real, sin API key)
+Crypto  → KuCoin / OKX / Bybit via ccxt (sin restricciones en cloud)
+         (Binance bloquea IPs de Render/AWS/cloud providers)
 Forex / Gold / Acciones → yfinance (~15 min delay)
 """
 
@@ -40,23 +41,58 @@ BINANCE_TF    = {"5m":"5m","15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
 BINANCE_LIMIT = {"5m":1000,"15m":1000,"1h":1000,"4h":500,"1d":500}
 
 
-class BinanceFetcher:
+class CryptoFetcher:
+    """
+    Fetcher multi-exchange para OHLCV de cripto.
+    Prueba en orden: KuCoin → OKX → Bybit
+    Binance bloquea IPs de Render y otros cloud providers.
+    """
+    _EXCHANGES = [
+        lambda: ccxt.kucoin({"enableRateLimit": True}),
+        lambda: ccxt.okx({"enableRateLimit": True}),
+        lambda: ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "spot"}}),
+    ]
+
     def __init__(self, symbol="ETH/USDT"):
-        self.symbol   = symbol
-        self.exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "spot"}})
+        self.symbol = symbol
+
+    def _fetch_raw(self, timeframe="1h", limit=500):
+        interval  = BINANCE_TF.get(timeframe, "1h")
+        last_err  = None
+        for factory in self._EXCHANGES:
+            try:
+                ex  = factory()
+                raw = ex.fetch_ohlcv(self.symbol, timeframe=interval, limit=limit)
+                if raw and len(raw) >= 60:
+                    print(f"  [{ex.id.upper()}] {self.symbol} {timeframe} OK ({len(raw)} velas)")
+                    return raw
+            except Exception as e:
+                last_err = e
+        raise Exception(f"Todos los exchanges fallaron para {self.symbol}: {last_err}")
 
     def fetch_ticker(self):
-        t = self.exchange.fetch_ticker(self.symbol)
-        return {"price": t["last"], "change_pct": t["percentage"],
-                "change_abs": t["change"], "volume_24h": t["quoteVolume"],
-                "high_24h": t["high"], "low_24h": t["low"],
-                "source": "Binance", "realtime": True}
+        for factory in self._EXCHANGES:
+            try:
+                ex = factory()
+                t  = ex.fetch_ticker(self.symbol)
+                return {
+                    "price":      t["last"],
+                    "change_pct": t.get("percentage", 0) or 0,
+                    "change_abs": t.get("change", 0) or 0,
+                    "volume_24h": t.get("quoteVolume", 0) or 0,
+                    "high_24h":   t.get("high", 0) or 0,
+                    "low_24h":    t.get("low", 0) or 0,
+                    "source":     ex.id,
+                    "realtime":   True,
+                }
+            except Exception:
+                continue
+        return {"price": None, "change_pct": 0, "source": "unavailable", "realtime": False}
 
     def fetch_ohlcv(self, timeframe="1h", limit=None):
-        interval = BINANCE_TF.get(timeframe, "1h")
-        limit    = limit or BINANCE_LIMIT.get(timeframe, 500)
-        raw = self.exchange.fetch_ohlcv(self.symbol, timeframe=interval, limit=limit)
-        df  = pd.DataFrame(raw, columns=["ts","open","high","low","close","volume"])
+        limit = limit or BINANCE_LIMIT.get(timeframe, 500)
+        raw   = self._fetch_raw(timeframe, limit)
+        df    = pd.DataFrame(raw, columns=["ts","open","high","low","close","volume"])
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
         df.set_index("ts", inplace=True)
         return df.astype(float)
@@ -66,12 +102,15 @@ class BinanceFetcher:
         data = {}
         for tf in tfs:
             try:
-                print(f"  [BINANCE] {self.symbol} {tf}...")
                 data[tf] = self.fetch_ohlcv(tf)
-                time.sleep(0.3)
+                time.sleep(0.4)
             except Exception as e:
-                print(f"  [ERROR] {tf}: {e}")
+                print(f"  [ERROR] {self.symbol} {tf}: {e}")
         return data
+
+
+# Alias para compatibilidad con imports existentes
+BinanceFetcher = CryptoFetcher
 
 
 class YahooFetcher:
@@ -123,7 +162,7 @@ class YahooFetcher:
 
 
 def get_fetcher(symbol):
-    return BinanceFetcher(symbol) if symbol in CRYPTO_SYMBOLS else YahooFetcher(symbol)
+    return CryptoFetcher(symbol) if symbol in CRYPTO_SYMBOLS else YahooFetcher(symbol)
 
 def fetch_ticker_universal(symbol):
     return get_fetcher(symbol).fetch_ticker()
@@ -149,7 +188,6 @@ def make_synthetic_ohlcv(n=1500, seed=42, freq="1h", start_price=2000.0):
     return pd.DataFrame({"open":open_,"high":high,"low":low,"close":close,"volume":vol}, index=idx)
 
 def make_synthetic_all_timeframes(start_price=2000.0):
-    # Usar alias modernos de pandas (sin deprecation warnings)
     configs = {
         "5m":  (1500, "5min"),
         "15m": (1500, "15min"),
