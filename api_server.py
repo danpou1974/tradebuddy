@@ -33,7 +33,8 @@ async def lifespan(application):
     async def _startup_scan():
         await asyncio.sleep(15)   # espera a que el servidor esté completamente listo
         try:
-            new_sigs = scan_and_emit()
+            loop = asyncio.get_event_loop()
+            new_sigs = await loop.run_in_executor(None, scan_and_emit)
             for s in new_sigs:
                 s["id"] = f"{s['symbol'].replace('/', '')}_{s['generated_at']}"
                 _signals_history.insert(0, s)
@@ -740,7 +741,8 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=403, detail="Bad secret")
 
     try:
-        new_signals = scan_and_emit()
+        loop = asyncio.get_event_loop()
+        new_signals = await loop.run_in_executor(None, scan_and_emit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"scan error: {e}")
 
@@ -798,7 +800,9 @@ async def scan_signals_debug(admin_email: str):
     """Run a dry scan (below threshold too) for admin visibility."""
     if (admin_email or "").strip().lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Not authorized")
-    return {"scan": debug_scan()}
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, debug_scan)
+    return {"scan": result}
 
 
 @app.get("/api/subscription/{user_id}")

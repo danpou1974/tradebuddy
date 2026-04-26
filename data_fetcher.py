@@ -48,9 +48,9 @@ class CryptoFetcher:
     Binance bloquea IPs de Render y otros cloud providers.
     """
     _EXCHANGES = [
-        lambda: ccxt.kucoin({"enableRateLimit": True}),
-        lambda: ccxt.okx({"enableRateLimit": True}),
-        lambda: ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "spot"}}),
+        lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000}),
+        lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000}),
+        lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "spot"}}),
     ]
 
     def __init__(self, symbol="ETH/USDT"):
