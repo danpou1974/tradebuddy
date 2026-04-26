@@ -468,6 +468,18 @@ _alerts_registry: Dict[str, List[Dict]] = {}
 _error_log: List[Dict] = []
 _ERROR_LOG_MAX = 200
 
+# ── Último resultado de debug scan (en memoria) ──────────────────────────────
+import time as _time_module
+_last_scan_status: Dict = {
+    "status": "never_run",   # "never_run" | "running" | "done" | "error"
+    "started_at": None,
+    "finished_at": None,
+    "duration_s": None,
+    "results": [],
+    "error": None,
+}
+_scan_lock = False   # evita scans concurrentes
+
 
 class PushTokenRequest(BaseModel):
     user_id: str
@@ -809,12 +821,49 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
 
 @app.get("/api/scan-signals/debug")
 async def scan_signals_debug(admin_email: str):
-    """Run a dry scan (below threshold too) for admin visibility."""
+    """
+    Lanza un debug scan en background y devuelve inmediatamente.
+    Consultá /api/scan-status para ver los resultados cuando terminen.
+    """
+    global _scan_lock
     if (admin_email or "").strip().lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Not authorized")
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, debug_scan)
-    return {"scan": result}
+
+    if _scan_lock:
+        return {"status": "already_running", "message": "Scan en progreso, consultá /api/scan-status"}
+
+    async def _run_debug():
+        global _scan_lock, _last_scan_status
+        _scan_lock = True
+        t0 = _time_module.time()
+        _last_scan_status.update({"status": "running", "started_at": t0,
+                                   "finished_at": None, "results": [], "error": None})
+        try:
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(None, debug_scan)
+            t1 = _time_module.time()
+            _last_scan_status.update({
+                "status": "done",
+                "finished_at": t1,
+                "duration_s": round(t1 - t0, 1),
+                "results": results,
+            })
+        except Exception as e:
+            _last_scan_status.update({"status": "error", "error": str(e),
+                                       "finished_at": _time_module.time()})
+        finally:
+            _scan_lock = False
+
+    asyncio.create_task(_run_debug())
+    return {"status": "started", "message": "Scan iniciado en background. Consultá /api/scan-status en ~2 minutos."}
+
+
+@app.get("/api/scan-status")
+async def scan_status(admin_email: str):
+    """Devuelve el resultado del último debug scan (instantáneo)."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return _last_scan_status
 
 
 @app.get("/api/test-exchange")
