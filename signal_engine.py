@@ -1,19 +1,25 @@
 """
-signal_engine.py
-================
+signal_engine.py  v3.2
+=======================
 Orchestrator for Buddy VIP Signals.
 
-scan_and_emit():
-  1. Iterate over the watchlist (crypto only).
-  2. Fetch 1h (primary) + 4h (confirmation) candles.
-  3. Detect candle patterns on primary.
-  4. Detect HMM regime on both timeframes (with cache).
-  5. Compute confluence (indicators + patterns + regime).
-  6. If score >= threshold and direction != none AND cooldown passed,
-     build signal dict.
-  7. Caller (api_server) is responsible for persistence + push.
+CAMBIOS v3.2:
+  - WATCHLIST actualizada: 9 pares (ETH,BNB,ADA,DOT,ATOM,NEAR,ARB,PAXG + BTC mean reversion)
+  - Eliminados: SOL, XRP, DOGE (no funciona trend-following), AVAX (35% WR), LINK (39% WR)
+  - Scorer reemplazado: scorer_v3.py (port exacto del signalScoringEngine.js v3.2)
+  - Threshold: 8.5 (era 7.5)
+  - Cooldown: 12h (era 4h)
+  - Sin límite diario global (era 4/día)
+  - PAIR_DIR_FILTER: ATOM/PAXG/ADA solo LONG, NEAR solo SHORT (backtest 1 año)
+  - BTC: estrategia mean reversion (threshold 6.0, RR 1:2, lev max 5x)
+  - HMM: se mantiene para contexto de régimen (no como filtro bloqueante)
 
-No Firestore calls happen here — keeps this module portable / testable.
+scan_and_emit():
+  1. Iterar watchlist.
+  2. Fetch 1h + 4h candles.
+  3. HMM regime (caché 30min).
+  4. scorer_v3.score_signal() — v3.2 scoring.
+  5. Si señal válida y cooldown OK → emitir.
 """
 
 from __future__ import annotations
@@ -22,25 +28,30 @@ from typing import Dict, List, Optional
 
 from data_fetcher import fetch_all_timeframes_universal
 from hmm_engine import RegimeHMM
-from pattern_detector import detect_patterns, aggregate_bias
-from confluence_scorer import calc_confluence
+from scorer_v3 import score_signal, PAIR_STRATEGIES, PAIR_DIR_FILTER
 
-# ----- config --------------------------------------------------------------
+# ── Config ───────────────────────────────────────────────────────────────────
 
+# Pares activos v3.2 — backtest 1 año confirmado
+# ETH 66.7%WR·PF3.08 | BNB 60%·1.97 | ADA 57.9%·1.80 | DOT 55.6%·1.81
+# ATOM 53.1%·1.44    | NEAR 52%·2.04 | ARB 60.9%·2.23 | PAXG 51.2%·1.90
+# BTC mean reversion: WR 42%, PF 1.40, RR 1:2
 WATCHLIST = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-    "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
+    "BTC/USDT",
+    "ETH/USDT", "BNB/USDT", "ADA/USDT",
+    "DOT/USDT", "ATOM/USDT",
+    "NEAR/USDT", "ARB/USDT", "PAXG/USDT",
 ]
+
 PRIMARY_TF = "1h"
-HIGHER_TF = "4h"
-SCORE_THRESHOLD = 7.5
-PER_ASSET_COOLDOWN_SEC = 4 * 3600       # 4h between signals per asset
-GLOBAL_DAILY_LIMIT = 4                   # max 4 signals / day total
+HIGHER_TF  = "4h"
+PER_ASSET_COOLDOWN_SEC = 12 * 3600   # 12h entre señales por par (backtest calibrado)
 
-_hmm_cache: Dict[str, tuple] = {}        # "symbol_tf" -> (model, ts)
-_last_sent: Dict[str, float] = {}        # "symbol" -> ts of last signal
-_day_count: Dict[str, int] = {}          # "YYYY-MM-DD" -> count
+_hmm_cache: Dict[str, tuple] = {}   # "symbol_tf" -> (model, ts)
+_last_sent: Dict[str, float] = {}   # "symbol" -> timestamp última señal
 
+
+# ── HMM regime (caché 30 min) ────────────────────────────────────────────────
 
 def _hmm_regime(symbol: str, tf: str, df) -> str:
     key = f"{symbol}_{tf}"
@@ -59,87 +70,61 @@ def _hmm_regime(symbol: str, tf: str, df) -> str:
         return "Lateral"
 
 
-def _suggest_leverage(score: float, direction: str) -> int:
-    """Conservative leverage suggestion based on score."""
-    if score >= 9:
-        return 5
-    if score >= 8:
-        return 4
-    if score >= 7.5:
-        return 3
-    return 2
-
+# ── Cooldown ─────────────────────────────────────────────────────────────────
 
 def _can_emit(symbol: str) -> bool:
     now = time.time()
     last = _last_sent.get(symbol, 0)
-    if now - last < PER_ASSET_COOLDOWN_SEC:
-        return False
-    day_key = time.strftime("%Y-%m-%d", time.gmtime(now))
-    if _day_count.get(day_key, 0) >= GLOBAL_DAILY_LIMIT:
-        return False
-    return True
+    return (now - last) >= PER_ASSET_COOLDOWN_SEC
 
 
 def _mark_emitted(symbol: str) -> None:
-    now = time.time()
-    _last_sent[symbol] = now
-    day_key = time.strftime("%Y-%m-%d", time.gmtime(now))
-    _day_count[day_key] = _day_count.get(day_key, 0) + 1
+    _last_sent[symbol] = time.time()
 
+
+# ── Single symbol analysis ────────────────────────────────────────────────────
 
 def analyse_symbol(symbol: str) -> Optional[Dict]:
-    """Run full analysis for a single symbol. Return a signal dict or None."""
+    """Run full analysis for a single symbol. Returns a signal dict or None."""
     try:
         frames = fetch_all_timeframes_universal(symbol, timeframes=[PRIMARY_TF, HIGHER_TF])
     except Exception as e:
         return {"symbol": symbol, "error": f"fetch: {e}"}
 
-    df_primary = frames.get(PRIMARY_TF)
-    df_higher = frames.get(HIGHER_TF)
-    if df_primary is None or len(df_primary) < 60:
+    df_1h = frames.get(PRIMARY_TF)
+    df_4h = frames.get(HIGHER_TF)
+
+    if df_1h is None or len(df_1h) < 60:
         return None
 
-    patterns = detect_patterns(df_primary)
-    pat_bias = aggregate_bias(patterns)
+    # HMM regime — solo para contexto, no bloquea señales
+    try:
+        regime_1h = _hmm_regime(symbol, PRIMARY_TF, df_1h)
+        regime_4h = _hmm_regime(symbol, HIGHER_TF, df_4h) if df_4h is not None and len(df_4h) >= 60 else None
+    except Exception:
+        regime_1h = "Lateral"
+        regime_4h = None
 
-    regime_p = _hmm_regime(symbol, PRIMARY_TF, df_primary)
-    regime_h = _hmm_regime(symbol, HIGHER_TF, df_higher) if df_higher is not None and len(df_higher) >= 60 else None
-
-    conf = calc_confluence(df_primary, df_higher, pat_bias, regime_p, regime_h)
-
-    if conf["direction"] == "none":
+    # Score v3.2
+    sig = score_signal(symbol, df_1h, df_4h, regime=regime_1h, higher_regime=regime_4h)
+    if sig is None:
         return None
-    if conf["score"] < SCORE_THRESHOLD:
-        return None
 
-    leverage = _suggest_leverage(conf["score"], conf["direction"])
+    # Enriquecer con régimen HMM
+    sig["regime"]        = regime_1h
+    sig["higher_regime"] = regime_4h
+    sig["timeframe"]     = PRIMARY_TF
+    sig["higher_tf"]     = HIGHER_TF
+    sig["generated_at"]  = int(time.time())
 
-    return {
-        "symbol": symbol,
-        "direction": conf["direction"],
-        "entry": conf["entry"],
-        "sl": conf["sl"],
-        "tp1": conf["tp1"],
-        "tp2": conf["tp2"],
-        "rr": conf["rr"],
-        "score": conf["score"],
-        "leverage": leverage,
-        "risk_pct": 1.5,             # fixed 1.5% per trade suggestion
-        "timeframe": PRIMARY_TF,
-        "higher_tf": HIGHER_TF,
-        "regime": regime_p,
-        "higher_regime": regime_h,
-        "patterns": pat_bias["patterns"],
-        "reasons": conf["reasons"],
-        "generated_at": int(time.time()),
-    }
+    return sig
 
+
+# ── Scan & emit ───────────────────────────────────────────────────────────────
 
 def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
     """
-    Scan the watchlist and return *new* signals to emit
-    (respects cooldowns and daily limit).
+    Scan the watchlist and return new signals (respects cooldowns).
     """
     symbols = watchlist or WATCHLIST
     emitted: List[Dict] = []
@@ -147,9 +132,9 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
         if not _can_emit(sym):
             continue
         sig = analyse_symbol(sym)
-        if not sig or "error" in (sig or {}):
+        if not sig or "error" in sig:
             continue
-        if "direction" not in sig:
+        if not sig.get("direction"):
             continue
         emitted.append(sig)
         _mark_emitted(sym)
@@ -157,29 +142,30 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
 
 
 def debug_scan(watchlist: Optional[List[str]] = None) -> List[Dict]:
-    """Like scan_and_emit but returns every analysis (even below threshold)."""
+    """Like scan_and_emit but returns all analyses (even below threshold)."""
     symbols = watchlist or WATCHLIST
     out: List[Dict] = []
     for sym in symbols:
         try:
             frames = fetch_all_timeframes_universal(sym, timeframes=[PRIMARY_TF, HIGHER_TF])
-            df_p = frames.get(PRIMARY_TF)
-            df_h = frames.get(HIGHER_TF)
-            if df_p is None or len(df_p) < 60:
+            df_1h = frames.get(PRIMARY_TF)
+            df_4h = frames.get(HIGHER_TF)
+            if df_1h is None or len(df_1h) < 60:
                 out.append({"symbol": sym, "skipped": "no data"})
                 continue
-            patterns = detect_patterns(df_p)
-            pat_bias = aggregate_bias(patterns)
-            regime_p = _hmm_regime(sym, PRIMARY_TF, df_p)
-            regime_h = _hmm_regime(sym, HIGHER_TF, df_h) if df_h is not None else None
-            conf = calc_confluence(df_p, df_h, pat_bias, regime_p, regime_h)
+            regime_1h = _hmm_regime(sym, PRIMARY_TF, df_1h)
+            regime_4h = _hmm_regime(sym, HIGHER_TF, df_4h) if df_4h is not None else None
+            sig = score_signal(sym, df_1h, df_4h, regime=regime_1h, higher_regime=regime_4h)
             out.append({
                 "symbol": sym,
-                "score": conf["score"],
-                "direction": conf["direction"],
-                "regime": regime_p,
-                "higher_regime": regime_h,
-                "patterns": pat_bias["patterns"],
+                "score":     sig["score"] if sig else 0,
+                "direction": sig["direction"] if sig else "none",
+                "strategy":  sig.get("strategy", "trend") if sig else "trend",
+                "regime":    regime_1h,
+                "higher_regime": regime_4h,
+                "signal_generated": sig is not None,
+                "dir_filter": PAIR_DIR_FILTER.get(sym),
+                "breakdown": sig.get("breakdown") if sig else None,
             })
         except Exception as e:
             out.append({"symbol": sym, "error": str(e)})

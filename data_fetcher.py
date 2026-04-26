@@ -13,8 +13,11 @@ import yfinance as yf
 from typing import Optional
 
 CRYPTO_SYMBOLS = {
-    "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT",
-    "XRP/USDT","AVAX/USDT","ADA/USDT","DOGE/USDT","LINK/USDT","MATIC/USDT",
+    # Pares activos v3.2 (backtest confirmado)
+    "BTC/USDT","ETH/USDT","BNB/USDT","ADA/USDT",
+    "DOT/USDT","ATOM/USDT","NEAR/USDT","ARB/USDT","PAXG/USDT",
+    # Pares legacy (mantenidos para compatibilidad con otras partes del app)
+    "SOL/USDT","XRP/USDT","AVAX/USDT","DOGE/USDT","LINK/USDT","MATIC/USDT",
 }
 
 YAHOO_TICKERS = {
