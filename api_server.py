@@ -805,6 +805,37 @@ async def scan_signals_debug(admin_email: str):
     return {"scan": result}
 
 
+@app.get("/api/test-exchange")
+async def test_exchange(admin_email: str):
+    """Quick connectivity test — fetches 10 candles of ETH/USDT from each exchange."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    import ccxt, time as _time
+    results = []
+    exchanges = [
+        ("kucoin", lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000})),
+        ("okx",    lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000})),
+        ("bybit",  lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "spot"}})),
+    ]
+    def _test_one(name, factory):
+        t0 = _time.time()
+        try:
+            ex = factory()
+            raw = ex.fetch_ohlcv("ETH/USDT", timeframe="1h", limit=10)
+            elapsed = round(_time.time() - t0, 2)
+            return {"exchange": name, "ok": True, "candles": len(raw), "elapsed_s": elapsed}
+        except Exception as e:
+            elapsed = round(_time.time() - t0, 2)
+            return {"exchange": name, "ok": False, "error": str(e)[:120], "elapsed_s": elapsed}
+
+    loop = asyncio.get_event_loop()
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futs = [loop.run_in_executor(pool, _test_one, name, factory) for name, factory in exchanges]
+        results = list(await asyncio.gather(*futs))
+    return {"results": results}
+
+
 @app.get("/api/subscription/{user_id}")
 async def get_subscription(user_id: str):
     """Check user's subscription status."""
