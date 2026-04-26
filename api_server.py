@@ -24,7 +24,26 @@ from data_fetcher import BinanceFetcher, fetch_ticker_universal, fetch_all_timef
 from signal_engine import scan_and_emit, debug_scan, WATCHLIST
 from expo_push import send_push_batch, build_signal_message
 
-app = FastAPI(title="TradeBuddy API", version="1.0.0")
+import asyncio
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(application):
+    """Ejecuta un scan al iniciar para poblar _signals_history desde el arranque."""
+    async def _startup_scan():
+        await asyncio.sleep(15)   # espera a que el servidor esté completamente listo
+        try:
+            new_sigs = scan_and_emit()
+            for s in new_sigs:
+                s["id"] = f"{s['symbol'].replace('/', '')}_{s['generated_at']}"
+                _signals_history.insert(0, s)
+            print(f"[startup] scan OK — {len(new_sigs)} señal(es) generada(s)")
+        except Exception as e:
+            print(f"[startup] scan error: {e}")
+    asyncio.create_task(_startup_scan())
+    yield
+
+app = FastAPI(title="TradeBuddy API", version="1.0.0", lifespan=lifespan)
 
 # CORS — allow mobile app and web preview
 app.add_middleware(
@@ -483,17 +502,17 @@ async def admin_stats(admin_email: str):
 
 
 @app.get("/api/signals/list")
-async def signals_list(user_id: Optional[str] = None, limit: int = 50):
+async def signals_list(user_id: Optional[str] = None, email: Optional[str] = None, limit: int = 50):
     """Return recent signals. Only VIP users get the full feed."""
     rec = _push_registry.get(user_id or "")
-    rec_email = (rec.get("email", "") if rec else "").strip().lower()
-    # VIP si: flag en registry, es admin, email en whitelist server, o email en whitelist aunque no esté en registry
+    rec_email     = (rec.get("email", "") if rec else "").strip().lower()
+    direct_email  = (email or "").strip().lower()   # email enviado directo desde el frontend
     is_vip = bool(
         (rec and (rec.get("vip") or rec.get("is_admin")))
-        or rec_email in VIP_EMAILS
+        or rec_email    in VIP_EMAILS   # email en registry
+        or direct_email in VIP_EMAILS   # email enviado directo (sobrevive restart sin push token)
     )
     if not is_vip:
-        # Return only a count so non-VIP can display teaser
         return {"vip": False, "count": len(_signals_history), "signals": []}
     return {"vip": True, "count": len(_signals_history), "signals": _signals_history[:limit]}
 
