@@ -37,7 +37,15 @@ async def lifespan(application):
             for s in new_sigs:
                 s["id"] = f"{s['symbol'].replace('/', '')}_{s['generated_at']}"
                 _signals_history.insert(0, s)
-            print(f"[startup] scan OK — {len(new_sigs)} señal(es) generada(s)")
+            if len(_signals_history) > _SIGNALS_MAX:
+                del _signals_history[_SIGNALS_MAX:]
+            if new_sigs:
+                _save_signals_cache(_signals_history)
+            cached = _load_signals_cache()
+            if not new_sigs and cached:
+                print(f"[startup] sin señales nuevas — {len(cached)} señal(es) cargadas del cache")
+            else:
+                print(f"[startup] scan OK — {len(new_sigs)} señal(es) nueva(s)")
         except Exception as e:
             print(f"[startup] scan error: {e}")
     asyncio.create_task(_startup_scan())
@@ -414,9 +422,31 @@ VIP_EMAILS: set = {
 
 # user_id -> {token, lang, vip, email}
 _push_registry: Dict[str, Dict] = {}
-# list of signals (newest first), capped
-_signals_history: List[Dict] = []
-_SIGNALS_MAX = 200
+
+# ── Señales — persistencia en archivo (sobrevive sleep/wake de Render) ─────────
+_SIGNALS_CACHE_FILE = "/tmp/tradebuddy_signals.json"
+_SIGNALS_MAX = 10   # solo las últimas 10
+
+def _load_signals_cache() -> List[Dict]:
+    """Carga las últimas señales guardadas en disco."""
+    try:
+        with open(_SIGNALS_CACHE_FILE, "r") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data[:_SIGNALS_MAX]
+    except Exception:
+        pass
+    return []
+
+def _save_signals_cache(signals: List[Dict]) -> None:
+    """Persiste las últimas señales en disco."""
+    try:
+        with open(_SIGNALS_CACHE_FILE, "w") as f:
+            json.dump(signals[:_SIGNALS_MAX], f)
+    except Exception as e:
+        print(f"[cache] error guardando señales: {e}")
+
+_signals_history: List[Dict] = _load_signals_cache()   # carga al iniciar
 # user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
 # user_id -> list of price alert dicts
@@ -738,9 +768,11 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
             push_results.append({"lang": lang, **res})
         delivered.append({"signal": sig, "push": push_results})
 
-    # Trim history
+    # Trim history y persistir en disco
     if len(_signals_history) > _SIGNALS_MAX:
         del _signals_history[_SIGNALS_MAX:]
+    if new_signals:
+        _save_signals_cache(_signals_history)
 
     # Verificar alertas de precio de todos los usuarios
     alert_results = {"checked": 0, "triggered": 0}
