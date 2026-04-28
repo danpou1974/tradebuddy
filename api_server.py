@@ -414,6 +414,142 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
+# ── Email config (Gmail SMTP) ─────────────────────────────────────────────────
+GMAIL_USER     = os.environ.get("GMAIL_USER", "")          # ej: tradebuddy.signals@gmail.com
+GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")  # App Password de Google
+
+
+def _send_signal_emails(sig: Dict) -> None:
+    """Envía email con todos los detalles de la señal a los VIP emails."""
+    import smtplib, ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_USER or not GMAIL_PASSWORD:
+        print("[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido")
+        return
+
+    symbol    = sig.get("symbol", "")
+    direction = (sig.get("direction") or "").upper()
+    entry     = sig.get("entry", 0)
+    tp1       = sig.get("tp1", 0)
+    tp2       = sig.get("tp2", tp1)
+    sl        = sig.get("sl", 0)
+    leverage  = sig.get("leverage", 1)
+    score     = sig.get("score", 0)
+    regime    = sig.get("regime", "")
+    strategy  = sig.get("strategy", "trend")
+    reasons   = sig.get("reasons", [])
+
+    dir_emoji = "📈" if direction == "LONG" else "📉"
+    dir_color = "#00C896" if direction == "LONG" else "#ef4444"
+    rr        = round(abs(float(tp1) - float(entry)) / (abs(float(entry) - float(sl)) + 1e-10), 2) if entry and sl else 0
+
+    reasons_html = "".join(
+        f'<li style="margin-bottom:6px;color:#ccc;">{r}</li>'
+        for r in (reasons if isinstance(reasons, list) else [str(reasons)])
+    )
+
+    html = f"""
+<!DOCTYPE html><html><body style="background:#0d1117;color:#e6edf3;font-family:Arial,sans-serif;margin:0;padding:24px;">
+<div style="max-width:520px;margin:0 auto;background:#161b22;border-radius:12px;overflow:hidden;border:1px solid #30363d;">
+
+  <!-- Header -->
+  <div style="background:#1c2128;padding:20px 24px;border-bottom:1px solid #30363d;">
+    <div style="font-size:11px;color:#8b949e;letter-spacing:2px;margin-bottom:4px;">⚡ BUDDY SIGNALS VIP</div>
+    <div style="font-size:22px;font-weight:800;color:#e6edf3;">
+      {dir_emoji} {symbol} &nbsp;
+      <span style="color:{dir_color};font-size:18px;">{direction}</span>
+    </div>
+    <div style="margin-top:8px;">
+      <span style="background:{dir_color}22;color:{dir_color};border:1px solid {dir_color}44;
+                   padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;">
+        Score {score}/10
+      </span>
+      &nbsp;
+      <span style="background:#30363d;color:#8b949e;padding:3px 10px;border-radius:20px;font-size:12px;">
+        {strategy.upper()} · {regime}
+      </span>
+    </div>
+  </div>
+
+  <!-- Precios -->
+  <div style="padding:20px 24px;">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">ENTRADA</div>
+          <div style="font-size:20px;font-weight:800;color:#e6edf3;">${entry}</div>
+        </td>
+        <td width="8"></td>
+        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">STOP LOSS</div>
+          <div style="font-size:20px;font-weight:800;color:#ef4444;">${sl}</div>
+        </td>
+      </tr>
+      <tr><td height="8" colspan="3"></td></tr>
+      <tr>
+        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">TP1</div>
+          <div style="font-size:20px;font-weight:800;color:#00C896;">${tp1}</div>
+        </td>
+        <td width="8"></td>
+        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">TP2</div>
+          <div style="font-size:20px;font-weight:800;color:#00C896;">${tp2}</div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Leverage + RR -->
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <div style="flex:1;text-align:center;padding:10px;background:#0d1117;border-radius:8px;">
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px;">LEVERAGE</div>
+        <div style="font-size:18px;font-weight:800;color:#FFD600;">{leverage}x</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:10px;background:#0d1117;border-radius:8px;">
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px;">RATIO R:R</div>
+        <div style="font-size:18px;font-weight:800;color:#e6edf3;">1:{rr}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Razones -->
+  <div style="padding:0 24px 20px;">
+    <div style="font-size:12px;color:#8b949e;font-weight:700;letter-spacing:1px;margin-bottom:10px;">
+      💡 POR QUÉ ENTRAR
+    </div>
+    <ul style="margin:0;padding-left:18px;line-height:1.8;">
+      {reasons_html}
+    </ul>
+  </div>
+
+  <!-- Footer -->
+  <div style="background:#0d1117;padding:14px 24px;border-top:1px solid #30363d;
+               font-size:11px;color:#484f58;text-align:center;">
+    Señal educativa — ejecutá a tu propio criterio y riesgo · TradeBuddy VIP
+  </div>
+</div>
+</body></html>
+"""
+
+    subject = f"{dir_emoji} Señal VIP: {symbol} {direction} — Entrada ${entry} · {leverage}x"
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
+            for recipient in VIP_EMAILS:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
+                msg["To"]      = recipient
+                msg.attach(MIMEText(html, "html"))
+                server.sendmail(GMAIL_USER, recipient, msg.as_string())
+                print(f"[email] enviado a {recipient}")
+    except Exception as e:
+        print(f"[email] error SMTP: {e}")
+
 # Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
 # Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
 VIP_EMAILS: set = {
@@ -851,6 +987,13 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
             if new_signals:
                 _save_signals_cache(_signals_history)
                 print(f"[cron] {len(new_signals)} señal(es) nueva(s) guardadas")
+                # Enviar email a todos los VIP
+                for sig in new_signals:
+                    try:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, _send_signal_emails, sig)
+                    except Exception as e:
+                        print(f"[email] error: {e}")
 
             # Cierre automático TP/SL
             active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
