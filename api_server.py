@@ -743,6 +743,74 @@ async def manual_alert_check(x_scan_secret: Optional[str] = Header(default=None)
     return {"ok": True, **result, "users_with_alerts": len(_alerts_registry)}
 
 
+async def _fetch_prices_for_signals(symbols: list) -> Dict[str, float]:
+    """Obtiene precios via KuCoin REST (sin restricciones de Render IP)."""
+    prices: Dict[str, float] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for sym in symbols:
+                kucoin_sym = sym.replace("/", "-")
+                try:
+                    r = await client.get(
+                        f"https://api.kucoin.com/api/v1/market/stats?symbol={kucoin_sym}")
+                    data = r.json()
+                    if str(data.get("code")) == "200000":
+                        prices[sym] = float(data["data"].get("last", 0) or 0)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[outcomes] price fetch error: {e}")
+    return prices
+
+
+def _check_signal_outcomes(prices: Dict[str, float]) -> int:
+    """
+    Revisa señales activas y marca automáticamente las que alcanzaron TP1 o SL.
+    Devuelve el número de señales cerradas.
+    """
+    import time as _t
+    closed = 0
+    changed = False
+    for sig in _signals_history:
+        if sig.get("outcome"):        # ya tiene resultado
+            continue
+        sym    = sig.get("symbol", "")
+        price  = prices.get(sym)
+        if not price:
+            continue
+
+        entry     = float(sig.get("entry", 0) or 0)
+        sl        = float(sig.get("sl",    0) or 0)
+        tp1       = float(sig.get("tp1",   0) or 0)
+        direction = sig.get("direction", "long")
+        leverage  = sig.get("leverage",  1)
+
+        if not entry:
+            continue
+
+        is_long = direction == "long"
+        hit_tp  = (is_long  and price >= tp1) or (not is_long and price <= tp1)
+        hit_sl  = (is_long  and price <= sl)  or (not is_long and price >= sl)
+
+        if hit_tp or hit_sl:
+            outcome    = "tp1" if hit_tp else "sl"
+            exit_price = tp1 if hit_tp else sl
+            raw_pct    = ((exit_price - entry) / entry * 100) if is_long \
+                         else ((entry - exit_price) / entry * 100)
+            pnl_pct    = round(raw_pct * leverage, 2)
+            sig["outcome"]     = outcome
+            sig["exit_price"]  = exit_price
+            sig["exit_at"]     = int(_t.time())
+            sig["pnl_pct"]     = pnl_pct
+            closed  += 1
+            changed  = True
+            print(f"[outcomes] {sym} → {outcome.upper()} | PnL: {pnl_pct:+.1f}%")
+
+    if changed:
+        _save_signals_cache(_signals_history)
+    return closed
+
+
 @app.post("/api/scan-signals")
 async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
     """
@@ -788,18 +856,32 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
     if new_signals:
         _save_signals_cache(_signals_history)
 
+    # Verificar cierre automático de señales activas (TP / SL alcanzado)
+    active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
+    outcomes_closed = 0
+    prices_for_outcomes: Dict[str, float] = {}
+    if active_syms:
+        try:
+            prices_for_outcomes = await _fetch_prices_for_signals(list(set(active_syms)))
+            outcomes_closed = _check_signal_outcomes(prices_for_outcomes)
+        except Exception as e:
+            print(f"[scan] outcomes check error: {e}")
+
     # Verificar alertas de precio de todos los usuarios
     alert_results = {"checked": 0, "triggered": 0}
     if _alerts_registry:
         try:
-            prices = await fetch_binance_prices()
-            alert_results = await check_and_send_price_alerts(prices)
+            all_prices = {**prices_for_outcomes}
+            if not all_prices:
+                all_prices = await fetch_binance_prices()
+            alert_results = await check_and_send_price_alerts(all_prices)
         except Exception as e:
             print(f"[scan] alert check error: {e}")
 
     return {
         "ok": True,
         "new_signals": len(new_signals),
+        "outcomes_closed": outcomes_closed,
         "vip_recipients": sum(1 for r in _push_registry.values() if r.get("vip") or r.get("is_admin")),
         "delivered": delivered,
         "alerts_checked": alert_results["checked"],
