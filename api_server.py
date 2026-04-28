@@ -1091,6 +1091,37 @@ async def inject_signal(request: Request):
     return {"ok": True, "signal_id": sig["id"], "total_signals": len(_signals_history)}
 
 
+@app.get("/api/test-email")
+async def test_email(admin_email: str):
+    """Admin: envía un email de prueba a todos los VIP para verificar la config SMTP."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    test_sig = {
+        "symbol":    "ETH/USDT",
+        "direction": "long",
+        "entry":     3200.0,
+        "tp1":       3400.0,
+        "tp2":       3600.0,
+        "sl":        3050.0,
+        "leverage":  5,
+        "score":     9.2,
+        "regime":    "Tendencia Alcista",
+        "strategy":  "trend",
+        "reasons": [
+            "EMA 20 > EMA 50 > EMA 200 — estructura alcista confirmada",
+            "RSI 58 — momentum positivo sin sobrecompra",
+            "Volumen 40% sobre promedio 20 periodos",
+            "4H: precio sobre EMA200, MACD positivo",
+            "Vela envolvente alcista en soporte clave",
+        ],
+    }
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _send_signal_emails, test_sig)
+    return {"ok": True, "sent_to": list(VIP_EMAILS), "gmail_user": GMAIL_USER or "(no configurado)"}
+
+
 @app.get("/api/test-exchange")
 async def test_exchange(admin_email: str):
     """Quick connectivity test — fetches 10 candles of ETH/USDT via REST directo."""
