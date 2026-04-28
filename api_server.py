@@ -31,19 +31,7 @@ from contextlib import asynccontextmanager
 async def lifespan(application):
     """Ejecuta un scan al iniciar para poblar _signals_history desde el arranque."""
     async def _startup_scan():
-        await asyncio.sleep(5)    # breve pausa para que el servidor esté listo
-        # Pre-cargar instancias de exchange (load_markets ~20s) antes del scan
-        try:
-            from data_fetcher import CryptoFetcher
-            loop = asyncio.get_event_loop()
-            def _preload():
-                for name, factory in CryptoFetcher._FACTORIES:
-                    CryptoFetcher._get_exchange(name, factory)
-                print("[startup] exchanges pre-cargados OK")
-            await loop.run_in_executor(None, _preload)
-        except Exception as e:
-            print(f"[startup] preload error: {e}")
-
+        await asyncio.sleep(10)   # espera a que el servidor esté listo
         try:
             loop = asyncio.get_event_loop()
             new_sigs = await loop.run_in_executor(None, scan_and_emit)
@@ -868,32 +856,30 @@ async def scan_status(admin_email: str):
 
 @app.get("/api/test-exchange")
 async def test_exchange(admin_email: str):
-    """Quick connectivity test — fetches 10 candles of ETH/USDT from each exchange."""
+    """Quick connectivity test — fetches 10 candles of ETH/USDT via REST directo."""
     if (admin_email or "").strip().lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Not authorized")
-    import ccxt, time as _time
-    results = []
-    exchanges = [
-        ("kucoin", lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000})),
-        ("okx",    lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000})),
-        ("bybit",  lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000, "options": {"defaultType": "spot"}})),
-    ]
-    def _test_one(name, factory):
-        t0 = _time.time()
-        try:
-            ex = factory()
-            raw = ex.fetch_ohlcv("ETH/USDT", timeframe="1h", limit=10)
-            elapsed = round(_time.time() - t0, 2)
-            return {"exchange": name, "ok": True, "candles": len(raw), "elapsed_s": elapsed}
-        except Exception as e:
-            elapsed = round(_time.time() - t0, 2)
-            return {"exchange": name, "ok": False, "error": str(e)[:120], "elapsed_s": elapsed}
+    from data_fetcher import CryptoFetcher
+    import time as _time
+
+    def _test():
+        fetcher = CryptoFetcher("ETH/USDT")
+        results = []
+        for name, fn in [("kucoin", fetcher._fetch_kucoin), ("okx", fetcher._fetch_okx)]:
+            t0 = _time.time()
+            try:
+                raw = fn("1h", 10)
+                elapsed = round(_time.time() - t0, 2)
+                results.append({"exchange": name, "ok": True,
+                                 "candles": len(raw), "elapsed_s": elapsed})
+            except Exception as e:
+                elapsed = round(_time.time() - t0, 2)
+                results.append({"exchange": name, "ok": False,
+                                 "error": str(e)[:120], "elapsed_s": elapsed})
+        return results
 
     loop = asyncio.get_event_loop()
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        futs = [loop.run_in_executor(pool, _test_one, name, factory) for name, factory in exchanges]
-        results = list(await asyncio.gather(*futs))
+    results = await loop.run_in_executor(None, _test)
     return {"results": results}
 
 

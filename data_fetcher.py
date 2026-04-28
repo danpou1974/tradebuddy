@@ -1,15 +1,15 @@
 """
 data_fetcher.py
 ===============
-Crypto  → KuCoin / OKX / Bybit via ccxt (sin restricciones en cloud)
-         (Binance bloquea IPs de Render/AWS/cloud providers)
+Crypto  → KuCoin REST + OKX REST (sin ccxt, sin load_markets, ~1-2s/fetch)
+         Binance bloquea IPs de Render/AWS. KuCoin y OKX no.
 Forex / Gold / Acciones → yfinance (~15 min delay)
 """
 
 import time
+import requests
 import numpy as np
 import pandas as pd
-import ccxt
 import yfinance as yf
 from typing import Optional
 
@@ -17,7 +17,7 @@ CRYPTO_SYMBOLS = {
     # Pares activos v3.2 (backtest confirmado)
     "BTC/USDT","ETH/USDT","BNB/USDT","ADA/USDT",
     "DOT/USDT","ATOM/USDT","NEAR/USDT","ARB/USDT","PAXG/USDT",
-    # Pares legacy (mantenidos para compatibilidad con otras partes del app)
+    # Pares legacy (mantenidos para compatibilidad)
     "SOL/USDT","XRP/USDT","AVAX/USDT","DOGE/USDT","LINK/USDT","MATIC/USDT",
 }
 
@@ -38,81 +38,154 @@ YAHOO_TF = {
 }
 
 BINANCE_TF    = {"5m":"5m","15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
-BINANCE_LIMIT = {"5m":1000,"15m":1000,"1h":1000,"4h":500,"1d":500}
+BINANCE_LIMIT = {"5m":300,"15m":300,"1h":300,"4h":200,"1d":300}
+
+# Mapeos de timeframe para cada exchange
+_KUCOIN_TF = {"5m":"5min","15m":"15min","1h":"1hour","4h":"4hour","1d":"1day"}
+_OKX_TF    = {"5m":"5m",  "15m":"15m",  "1h":"1H",   "4h":"4H",  "1d":"1D"}
 
 
 class CryptoFetcher:
     """
-    Fetcher multi-exchange para OHLCV de cripto.
-    Prueba en orden: KuCoin → OKX → Bybit
-    Binance bloquea IPs de Render y otros cloud providers.
-
-    Las instancias de exchange son singletons a nivel de clase para que
-    load_markets() se ejecute una sola vez al arrancar el servidor (~20s)
-    y los fetches posteriores tarden ~2-3s en vez de 22s.
+    Fetcher directo via REST API de KuCoin y OKX.
+    - Sin ccxt, sin load_markets() (era la causa de los 20s de overhead)
+    - Thread-safe: cada llamada crea su propia request HTTP
+    - ~1-2s por fetch en condiciones normales
+    - Binance bloquea IPs de Render — KuCoin y OKX no tienen restricciones
     """
-    _instances: dict = {}   # {"kucoin": ex, "okx": ex, ...}
-
-    _FACTORIES = [
-        ("kucoin", lambda: ccxt.kucoin({"enableRateLimit": True, "timeout": 12000})),
-        ("okx",    lambda: ccxt.okx({"enableRateLimit": True, "timeout": 12000})),
-        ("bybit",  lambda: ccxt.bybit({"enableRateLimit": True, "timeout": 12000,
-                                        "options": {"defaultType": "spot"}})),
-    ]
-
-    @classmethod
-    def _get_exchange(cls, name: str, factory):
-        if name not in cls._instances:
-            ex = factory()
-            try:
-                ex.load_markets()          # pre-carga una sola vez
-            except Exception:
-                pass
-            cls._instances[name] = ex
-        return cls._instances[name]
 
     def __init__(self, symbol="ETH/USDT"):
-        self.symbol = symbol
+        self.symbol      = symbol
+        self._kucoin_sym = symbol.replace("/", "-")   # "ETH/USDT" → "ETH-USDT"
+        self._okx_sym    = symbol.replace("/", "-")   # igual para OKX
 
-    def _fetch_raw(self, timeframe="1h", limit=500):
-        interval  = BINANCE_TF.get(timeframe, "1h")
-        last_err  = None
-        for name, factory in self._FACTORIES:
-            try:
-                ex  = self._get_exchange(name, factory)
-                raw = ex.fetch_ohlcv(self.symbol, timeframe=interval, limit=limit)
-                if raw and len(raw) >= 60:
-                    print(f"  [{name.upper()}] {self.symbol} {timeframe} OK ({len(raw)} velas)")
-                    return raw
-            except Exception as e:
-                last_err = e
-                # invalidar instancia si falla para re-crear en el próximo intento
-                cls_instances = CryptoFetcher._instances
-                if name in cls_instances:
-                    del cls_instances[name]
-        raise Exception(f"Todos los exchanges fallaron para {self.symbol}: {last_err}")
+    # ── KuCoin ────────────────────────────────────────────────────────────────
+
+    def _fetch_kucoin(self, timeframe: str, limit: int):
+        tf  = _KUCOIN_TF.get(timeframe, "1hour")
+        url = (f"https://api.kucoin.com/api/v1/market/candles"
+               f"?symbol={self._kucoin_sym}&type={tf}")
+        resp = requests.get(url, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        if str(data.get("code")) != "200000":
+            raise Exception(f"KuCoin API error: {data.get('msg', data)}")
+        candles = data.get("data", [])
+        # Formato: [ts_sec, open, close, high, low, volume, turnover] — NEWEST FIRST
+        result = []
+        for row in reversed(candles):
+            ts_ms = int(row[0]) * 1000
+            o  = float(row[1])
+            c  = float(row[2])
+            h  = float(row[3])
+            l  = float(row[4])
+            v  = float(row[5])
+            result.append([ts_ms, o, h, l, c, v])
+        return result[-limit:] if len(result) > limit else result
+
+    # ── OKX ───────────────────────────────────────────────────────────────────
+
+    def _fetch_okx(self, timeframe: str, limit: int):
+        tf  = _OKX_TF.get(timeframe, "1H")
+        cap = min(limit, 300)   # OKX max 300 por request
+        url = (f"https://www.okx.com/api/v5/market/candles"
+               f"?instId={self._okx_sym}&bar={tf}&limit={cap}")
+        resp = requests.get(url, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != "0":
+            raise Exception(f"OKX API error: {data.get('msg', data)}")
+        candles = data.get("data", [])
+        # Formato: [ts_ms, open, high, low, close, vol, ...] — NEWEST FIRST
+        result = []
+        for row in reversed(candles):
+            ts_ms = int(row[0])
+            o = float(row[1])
+            h = float(row[2])
+            l = float(row[3])
+            c = float(row[4])
+            v = float(row[5])
+            result.append([ts_ms, o, h, l, c, v])
+        return result
+
+    # ── Fetch raw con fallback ─────────────────────────────────────────────────
+
+    def _fetch_raw(self, timeframe="1h", limit=300):
+        errors = []
+
+        try:
+            raw = self._fetch_kucoin(timeframe, limit)
+            if raw and len(raw) >= 60:
+                print(f"  [KUCOIN] {self.symbol} {timeframe} OK ({len(raw)} velas)")
+                return raw
+            errors.append(f"KuCoin: solo {len(raw)} velas")
+        except Exception as e:
+            errors.append(f"KuCoin: {e}")
+
+        try:
+            raw = self._fetch_okx(timeframe, min(limit, 300))
+            if raw and len(raw) >= 60:
+                print(f"  [OKX] {self.symbol} {timeframe} OK ({len(raw)} velas)")
+                return raw
+            errors.append(f"OKX: solo {len(raw)} velas")
+        except Exception as e:
+            errors.append(f"OKX: {e}")
+
+        raise Exception(f"Todos los exchanges fallaron para {self.symbol} {timeframe}: {'; '.join(errors)}")
+
+    # ── Ticker ────────────────────────────────────────────────────────────────
 
     def fetch_ticker(self):
-        for factory in self._EXCHANGES:
-            try:
-                ex = factory()
-                t  = ex.fetch_ticker(self.symbol)
+        # KuCoin
+        try:
+            url  = f"https://api.kucoin.com/api/v1/market/stats?symbol={self._kucoin_sym}"
+            resp = requests.get(url, timeout=8)
+            data = resp.json()
+            if str(data.get("code")) == "200000":
+                d     = data["data"]
+                price = float(d.get("last", 0) or 0)
+                open_ = float(d.get("open", price) or price)
+                chg   = ((price - open_) / open_ * 100) if open_ else 0
                 return {
-                    "price":      t["last"],
-                    "change_pct": t.get("percentage", 0) or 0,
-                    "change_abs": t.get("change", 0) or 0,
-                    "volume_24h": t.get("quoteVolume", 0) or 0,
-                    "high_24h":   t.get("high", 0) or 0,
-                    "low_24h":    t.get("low", 0) or 0,
-                    "source":     ex.id,
-                    "realtime":   True,
+                    "price":      price,
+                    "change_pct": round(chg, 4),
+                    "change_abs": round(price - open_, 6),
+                    "volume_24h": float(d.get("volValue", 0) or 0),
+                    "high_24h":   float(d.get("high", 0) or 0),
+                    "low_24h":    float(d.get("low", 0) or 0),
+                    "source": "KuCoin", "realtime": True,
                 }
-            except Exception:
-                continue
+        except Exception:
+            pass
+
+        # OKX fallback
+        try:
+            url  = f"https://www.okx.com/api/v5/market/ticker?instId={self._okx_sym}"
+            resp = requests.get(url, timeout=8)
+            data = resp.json()
+            if data.get("code") == "0" and data.get("data"):
+                d     = data["data"][0]
+                price = float(d.get("last", 0) or 0)
+                open_ = float(d.get("open24h", price) or price)
+                chg   = ((price - open_) / open_ * 100) if open_ else 0
+                return {
+                    "price":      price,
+                    "change_pct": round(chg, 4),
+                    "change_abs": round(price - open_, 6),
+                    "volume_24h": float(d.get("volCcy24h", 0) or 0),
+                    "high_24h":   float(d.get("high24h", 0) or 0),
+                    "low_24h":    float(d.get("low24h", 0) or 0),
+                    "source": "OKX", "realtime": True,
+                }
+        except Exception:
+            pass
+
         return {"price": None, "change_pct": 0, "source": "unavailable", "realtime": False}
 
+    # ── OHLCV DataFrame ───────────────────────────────────────────────────────
+
     def fetch_ohlcv(self, timeframe="1h", limit=None):
-        limit = limit or BINANCE_LIMIT.get(timeframe, 500)
+        limit = limit or BINANCE_LIMIT.get(timeframe, 300)
         raw   = self._fetch_raw(timeframe, limit)
         df    = pd.DataFrame(raw, columns=["ts","open","high","low","close","volume"])
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
@@ -125,7 +198,7 @@ class CryptoFetcher:
         for tf in tfs:
             try:
                 data[tf] = self.fetch_ohlcv(tf)
-                time.sleep(0.4)
+                time.sleep(0.2)
             except Exception as e:
                 print(f"  [ERROR] {self.symbol} {tf}: {e}")
         return data
