@@ -854,6 +854,37 @@ async def scan_status(admin_email: str):
     return _last_scan_status
 
 
+@app.post("/api/signals/inject")
+async def inject_signal(request: Request):
+    """
+    Admin endpoint: inyecta una señal manual al historial VIP.
+    Útil para agregar señales reales cuando el mercado no genera setups automáticos.
+    Body: { "admin_email": "...", "signal": { symbol, direction, entry, sl, tp1, leverage, reasons: [...] } }
+    """
+    body = await request.json()
+    if (body.get("admin_email") or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    sig = body.get("signal", {})
+    if not sig.get("symbol") or not sig.get("direction") or not sig.get("entry"):
+        raise HTTPException(status_code=400, detail="signal.symbol, direction y entry son obligatorios")
+
+    import time as _t
+    sig.setdefault("generated_at", int(_t.time()))
+    sig.setdefault("strategy",     "manual")
+    sig.setdefault("score",        10.0)
+    sig.setdefault("leverage",     sig.get("leverage", 5))
+    sig.setdefault("reasons",      sig.get("reasons", ["Señal manual ingresada por el admin."]))
+    sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
+
+    _signals_history.insert(0, sig)
+    if len(_signals_history) > _SIGNALS_MAX:
+        del _signals_history[_SIGNALS_MAX:]
+    _save_signals_cache(_signals_history)
+
+    return {"ok": True, "signal_id": sig["id"], "total_signals": len(_signals_history)}
+
+
 @app.get("/api/test-exchange")
 async def test_exchange(admin_email: str):
     """Quick connectivity test — fetches 10 candles of ETH/USDT via REST directo."""

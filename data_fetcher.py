@@ -62,9 +62,10 @@ class CryptoFetcher:
     # ── KuCoin ────────────────────────────────────────────────────────────────
 
     def _fetch_kucoin(self, timeframe: str, limit: int):
-        tf  = _KUCOIN_TF.get(timeframe, "1hour")
-        url = (f"https://api.kucoin.com/api/v1/market/candles"
-               f"?symbol={self._kucoin_sym}&type={tf}")
+        tf   = _KUCOIN_TF.get(timeframe, "1hour")
+        cap  = min(limit, 1500)   # KuCoin max 1500 candles
+        url  = (f"https://api.kucoin.com/api/v1/market/candles"
+                f"?symbol={self._kucoin_sym}&type={tf}&pageSize={cap}")
         resp = requests.get(url, timeout=12)
         resp.raise_for_status()
         data = resp.json()
