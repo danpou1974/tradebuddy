@@ -8,7 +8,7 @@ CAMBIOS v3.2:
   - Eliminados: SOL, XRP, DOGE (no funciona trend-following), AVAX (35% WR), LINK (39% WR)
   - Scorer reemplazado: scorer_v3.py (port exacto del signalScoringEngine.js v3.2)
   - Threshold: 8.5 (era 7.5)
-  - Cooldown: 12h (era 4h)
+  - Cooldown: 4h (rebajado de 12h para mayor frecuencia)
   - Sin límite diario global (era 4/día)
   - PAIR_DIR_FILTER: ATOM/PAXG/ADA solo LONG, NEAR solo SHORT (backtest 1 año)
   - BTC: estrategia mean reversion (threshold 6.0, RR 1:2, lev max 5x)
@@ -45,7 +45,7 @@ WATCHLIST = [
 
 PRIMARY_TF = "1h"
 HIGHER_TF  = "4h"
-PER_ASSET_COOLDOWN_SEC = 12 * 3600   # 12h entre señales por par (backtest calibrado)
+PER_ASSET_COOLDOWN_SEC = 4 * 3600    # 4h entre señales por par
 
 _hmm_cache: Dict[str, tuple] = {}   # "symbol_tf" -> (model, ts)
 _last_sent: Dict[str, float] = {}   # "symbol" -> timestamp última señal
