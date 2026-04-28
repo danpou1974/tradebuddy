@@ -815,78 +815,59 @@ def _check_signal_outcomes(prices: Dict[str, float]) -> int:
 async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
     """
     Triggered by cron-job.org every 15 min.
-    Returns the new signals emitted in this run.
+    Devuelve 200 OK inmediatamente y corre el scan en background.
+    Así nunca hace timeout en cron-job.org (límite 30s).
     """
     if x_scan_secret != SCAN_SECRET:
         raise HTTPException(status_code=403, detail="Bad secret")
 
-    try:
-        loop = asyncio.get_event_loop()
-        new_signals = await loop.run_in_executor(None, scan_and_emit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"scan error: {e}")
-
-    delivered = []
-    for sig in new_signals:
-        sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
-        _signals_history.insert(0, sig)
-
-        # Dispatch per-language (group tokens by lang to preserve localization)
-        vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
-        by_lang: Dict[str, List[str]] = {}
-        for r in vip_records:
-            by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
-
-        push_results = []
-        for lang, tokens in by_lang.items():
-            msg = build_signal_message(sig, lang=lang)
-            res = await send_push_batch(
-                tokens=tokens,
-                title=msg["title"],
-                body=msg["body"],
-                data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
-                channel_id="vip-signals",
-            )
-            push_results.append({"lang": lang, **res})
-        delivered.append({"signal": sig, "push": push_results})
-
-    # Trim history y persistir en disco
-    if len(_signals_history) > _SIGNALS_MAX:
-        del _signals_history[_SIGNALS_MAX:]
-    if new_signals:
-        _save_signals_cache(_signals_history)
-
-    # Verificar cierre automático de señales activas (TP / SL alcanzado)
-    active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
-    outcomes_closed = 0
-    prices_for_outcomes: Dict[str, float] = {}
-    if active_syms:
+    async def _run_scan():
         try:
-            prices_for_outcomes = await _fetch_prices_for_signals(list(set(active_syms)))
-            outcomes_closed = _check_signal_outcomes(prices_for_outcomes)
-        except Exception as e:
-            print(f"[scan] outcomes check error: {e}")
+            loop = asyncio.get_event_loop()
+            new_signals = await loop.run_in_executor(None, scan_and_emit)
 
-    # Verificar alertas de precio de todos los usuarios
-    alert_results = {"checked": 0, "triggered": 0}
-    if _alerts_registry:
-        try:
-            all_prices = {**prices_for_outcomes}
-            if not all_prices:
-                all_prices = await fetch_binance_prices()
-            alert_results = await check_and_send_price_alerts(all_prices)
-        except Exception as e:
-            print(f"[scan] alert check error: {e}")
+            for sig in new_signals:
+                sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
+                _signals_history.insert(0, sig)
 
-    return {
-        "ok": True,
-        "new_signals": len(new_signals),
-        "outcomes_closed": outcomes_closed,
-        "vip_recipients": sum(1 for r in _push_registry.values() if r.get("vip") or r.get("is_admin")),
-        "delivered": delivered,
-        "alerts_checked": alert_results["checked"],
-        "alerts_triggered": alert_results["triggered"],
-    }
+                # Push notifications por idioma
+                vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
+                by_lang: Dict[str, List[str]] = {}
+                for r in vip_records:
+                    by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
+                for lang, tokens in by_lang.items():
+                    msg = build_signal_message(sig, lang=lang)
+                    await send_push_batch(
+                        tokens=tokens,
+                        title=msg["title"],
+                        body=msg["body"],
+                        data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
+                        channel_id="vip-signals",
+                    )
+
+            # Trim + persistir
+            if len(_signals_history) > _SIGNALS_MAX:
+                del _signals_history[_SIGNALS_MAX:]
+            if new_signals:
+                _save_signals_cache(_signals_history)
+                print(f"[cron] {len(new_signals)} señal(es) nueva(s) guardadas")
+
+            # Cierre automático TP/SL
+            active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
+            if active_syms:
+                prices = await _fetch_prices_for_signals(list(set(active_syms)))
+                closed = _check_signal_outcomes(prices)
+                if closed:
+                    print(f"[cron] {closed} señal(es) cerrada(s) automaticamente")
+                # Alertas de precio
+                if _alerts_registry:
+                    await check_and_send_price_alerts(prices)
+
+        except Exception as e:
+            print(f"[cron] scan error: {e}")
+
+    asyncio.create_task(_run_scan())
+    return {"ok": True, "status": "scan iniciado en background"}
 
 
 @app.get("/api/scan-signals/debug")
