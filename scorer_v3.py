@@ -598,7 +598,7 @@ def score_btc_mean_reversion(
 
     # 4. Volume + stoch + fib (0-1.8)
     vr = r["volRatio"]
-    s_vol = 0.4 if vr >= 1.3 else (0.7 if vr >= 1.8 else (0.8 if vr >= 2.5 else 0.0))
+    s_vol = 0.8 if vr >= 2.5 else (0.7 if vr >= 1.8 else (0.4 if vr >= 1.3 else 0.0))
     stoch_extreme = (is_bull and r["stochK"] < 20) or (not is_bull and r["stochK"] > 80)
     s_stoch = 0.5 if stoch_extreme else 0.0
     # BB squeeze

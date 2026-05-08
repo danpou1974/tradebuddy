@@ -609,11 +609,12 @@ VIP_EMAILS: set = {
 }
 
 # user_id -> {token, lang, vip, email}
+# Persistido en Firestore — sobrevive reinicios de Render
 _push_registry: Dict[str, Dict] = {}
 
-# ── Señales — persistencia en archivo (sobrevive sleep/wake de Render) ─────────
+# ── Señales — persistencia en Firestore (sobrevive sleep/wake de Render) ───────
 _SIGNALS_CACHE_FILE = "/tmp/tradebuddy_signals.json"
-_SIGNALS_MAX = 10   # solo las últimas 10
+_SIGNALS_MAX = 50   # últimas 50 señales (era 10 — causaba pérdida del historial)
 
 def _load_signals_cache() -> List[Dict]:
     """
@@ -666,7 +667,43 @@ def _save_signals_cache(signals: List[Dict]) -> None:
     except Exception as e:
         print(f"[cache] error guardando señales: {e}")
 
+
+# ── Push registry — persistencia en Firestore ────────────────────────────────
+_PUSH_REGISTRY_DOC = "push_registry"
+
+def _load_push_registry() -> Dict[str, Dict]:
+    """Carga push tokens desde Firestore al arrancar (sobrevive reinicios)."""
+    db = _get_firestore()
+    if not db:
+        return {}
+    try:
+        doc = db.collection("vip_signals").document(_PUSH_REGISTRY_DOC).get()
+        if doc.exists:
+            data = doc.to_dict()
+            reg = data.get("registry", {})
+            if isinstance(reg, dict) and reg:
+                print(f"[firestore] {len(reg)} push token(s) cargados")
+                return reg
+    except Exception as e:
+        print(f"[firestore] push_registry load error: {e}")
+    return {}
+
+def _save_push_registry() -> None:
+    """Persiste _push_registry en Firestore (fire-and-forget, silencioso)."""
+    db = _get_firestore()
+    if not db:
+        return
+    try:
+        db.collection("vip_signals").document(_PUSH_REGISTRY_DOC).set({
+            "registry": _push_registry,
+            "updated_at": admin_firestore.SERVER_TIMESTAMP,
+        })
+    except Exception as e:
+        print(f"[firestore] push_registry save error: {e}")
+
+
 _signals_history: List[Dict] = _load_signals_cache()   # carga al iniciar
+_push_registry:   Dict[str, Dict] = _load_push_registry()  # carga al iniciar
 # user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
 # user_id -> list of price alert dicts
@@ -711,6 +748,7 @@ async def register_push_token(req: PushTokenRequest):
         "email": req.email or "",
         "is_admin": is_admin,
     }
+    _save_push_registry()   # persiste en Firestore
     return {"ok": True, "registered_users": len(_push_registry)}
 
 
@@ -728,6 +766,7 @@ async def admin_toggle_vip(req: VipToggleRequest):
     if not rec:
         raise HTTPException(status_code=404, detail="User not found in registry")
     rec["vip"] = bool(req.vip)
+    _save_push_registry()   # persiste en Firestore
     return {"ok": True, "user": {req.user_id: rec}}
 
 
