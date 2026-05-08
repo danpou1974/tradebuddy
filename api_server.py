@@ -24,6 +24,50 @@ from data_fetcher import BinanceFetcher, fetch_ticker_universal, fetch_all_timef
 from signal_engine import scan_and_emit, debug_scan, WATCHLIST
 from expo_push import send_push_batch, build_signal_message
 
+# ── Firebase Admin (Firestore persistence) ────────────────────────────────────
+try:
+    import firebase_admin
+    from firebase_admin import credentials as fb_credentials, firestore as admin_firestore
+    _FIREBASE_AVAILABLE = True
+except ImportError:
+    _FIREBASE_AVAILABLE = False
+
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+FIREBASE_SERVICE_ACCOUNT_B64  = os.environ.get("FIREBASE_SERVICE_ACCOUNT_B64", "")
+
+_firestore_db = None
+
+def _get_firestore():
+    """Inicializa y retorna el cliente de Firestore. None si no está configurado."""
+    global _firestore_db
+    if _firestore_db is not None:
+        return _firestore_db
+    if not _FIREBASE_AVAILABLE:
+        return None
+    # Acepta JSON directo o base64 (más fácil de pegar en Render)
+    raw_json = ""
+    if FIREBASE_SERVICE_ACCOUNT_JSON:
+        raw_json = FIREBASE_SERVICE_ACCOUNT_JSON
+    elif FIREBASE_SERVICE_ACCOUNT_B64:
+        try:
+            import base64
+            raw_json = base64.b64decode(FIREBASE_SERVICE_ACCOUNT_B64).decode("utf-8")
+        except Exception as e:
+            print(f"[firestore] base64 decode error: {e}")
+            return None
+    if not raw_json:
+        return None
+    try:
+        if not firebase_admin._apps:
+            cred = fb_credentials.Certificate(json.loads(raw_json))
+            firebase_admin.initialize_app(cred)
+        _firestore_db = admin_firestore.client()
+        print("[firestore] conectado OK")
+        return _firestore_db
+    except Exception as e:
+        print(f"[firestore] init error: {e}")
+        return None
+
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -535,11 +579,18 @@ def _send_signal_emails(sig: Dict) -> None:
 
     subject = f"{dir_emoji} Señal VIP: {symbol} {direction} — Entrada ${entry} · {leverage}x"
 
+    # Fusionar destinatarios: whitelist fija + VIPs añadidos dinámicamente via admin panel
+    all_recipients: set = set(VIP_EMAILS)
+    for rec in _push_registry.values():
+        if (rec.get("vip") or rec.get("is_admin")) and rec.get("email"):
+            all_recipients.add(rec["email"].strip().lower())
+    all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
+
     context = ssl.create_default_context()
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
-            for recipient in VIP_EMAILS:
+            for recipient in all_recipients:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject
                 msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
@@ -565,7 +616,24 @@ _SIGNALS_CACHE_FILE = "/tmp/tradebuddy_signals.json"
 _SIGNALS_MAX = 10   # solo las últimas 10
 
 def _load_signals_cache() -> List[Dict]:
-    """Carga las últimas señales guardadas en disco."""
+    """
+    Carga señales desde Firestore (primario) con fallback a /tmp.
+    Firestore sobrevive reinicios de Render; /tmp no.
+    """
+    # 1. Intentar Firestore
+    db = _get_firestore()
+    if db:
+        try:
+            doc = db.collection("vip_signals").document("history").get()
+            if doc.exists:
+                data = doc.to_dict()
+                sigs = data.get("signals", [])
+                if isinstance(sigs, list) and sigs:
+                    print(f"[firestore] {len(sigs)} señal(es) cargadas")
+                    return sigs[:_SIGNALS_MAX]
+        except Exception as e:
+            print(f"[firestore] load error: {e}")
+    # 2. Fallback: /tmp
     try:
         with open(_SIGNALS_CACHE_FILE, "r") as f:
             data = json.load(f)
@@ -576,10 +644,25 @@ def _load_signals_cache() -> List[Dict]:
     return []
 
 def _save_signals_cache(signals: List[Dict]) -> None:
-    """Persiste las últimas señales en disco."""
+    """
+    Persiste señales en Firestore (primario) y /tmp (backup).
+    Firestore garantiza que sobrevivan al reinicio del servidor.
+    """
+    to_save = signals[:_SIGNALS_MAX]
+    # 1. Firestore
+    db = _get_firestore()
+    if db:
+        try:
+            db.collection("vip_signals").document("history").set({
+                "signals": to_save,
+                "updated_at": admin_firestore.SERVER_TIMESTAMP,
+            })
+        except Exception as e:
+            print(f"[firestore] save error: {e}")
+    # 2. /tmp backup
     try:
         with open(_SIGNALS_CACHE_FILE, "w") as f:
-            json.dump(signals[:_SIGNALS_MAX], f)
+            json.dump(to_save, f)
     except Exception as e:
         print(f"[cache] error guardando señales: {e}")
 
@@ -1087,6 +1170,32 @@ async def inject_signal(request: Request):
     if len(_signals_history) > _SIGNALS_MAX:
         del _signals_history[_SIGNALS_MAX:]
     _save_signals_cache(_signals_history)
+
+    # Notificar a todos los VIP (push + email) — igual que el cron automático
+    async def _notify_injected():
+        # Push por idioma
+        vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
+        by_lang: Dict[str, List[str]] = {}
+        for r in vip_records:
+            if r.get("token"):
+                by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
+        for lang, tokens in by_lang.items():
+            msg = build_signal_message(sig, lang=lang)
+            await send_push_batch(
+                tokens=tokens,
+                title=msg["title"],
+                body=msg["body"],
+                data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
+                channel_id="vip-signals",
+            )
+        # Email
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _send_signal_emails, sig)
+        except Exception as e:
+            print(f"[inject] email error: {e}")
+
+    asyncio.create_task(_notify_injected())
 
     return {"ok": True, "signal_id": sig["id"], "total_signals": len(_signals_history)}
 
