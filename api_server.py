@@ -1336,6 +1336,59 @@ async def remove_vip_email(admin_email: str, email: str):
     return {"ok": True, "message": f"{target} eliminado", "emails": sorted(current)}
 
 
+@app.get("/api/smtp-check")
+async def smtp_check(admin_email: str):
+    """Diagnóstico rápido: prueba TCP + SMTP_SSL en 30s y devuelve el error exacto."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    import socket as _socket
+    import smtplib, ssl as _ssl
+
+    def _check():
+        results = {}
+        # 1. TCP puro a port 465
+        try:
+            addrs = _socket.getaddrinfo("smtp.gmail.com", 465, _socket.AF_INET, _socket.SOCK_STREAM)
+            ip = addrs[0][4][0]
+            results["resolved_ip"] = ip
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            sock.settimeout(20)
+            sock.connect((ip, 465))
+            sock.close()
+            results["tcp_465"] = "OK"
+        except Exception as e:
+            results["tcp_465"] = f"ERROR: {e}"
+
+        # 2. TCP puro a port 587
+        try:
+            addrs = _socket.getaddrinfo("smtp.gmail.com", 587, _socket.AF_INET, _socket.SOCK_STREAM)
+            ip587 = addrs[0][4][0]
+            sock2 = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            sock2.settimeout(20)
+            sock2.connect((ip587, 587))
+            sock2.close()
+            results["tcp_587"] = "OK"
+        except Exception as e:
+            results["tcp_587"] = f"ERROR: {e}"
+
+        # 3. SMTP_SSL login si TCP 465 OK
+        if results.get("tcp_465") == "OK":
+            try:
+                ctx = _ssl.create_default_context()
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=20) as s:
+                    s.login(GMAIL_USER, GMAIL_PASSWORD)
+                    results["smtp_login"] = "OK"
+            except Exception as e:
+                results["smtp_login"] = f"ERROR: {e}"
+
+        return results
+
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, _check)
+    return res
+
+
 @app.get("/api/test-email")
 async def test_email(admin_email: str):
     """Admin: envía un email de prueba a todos los VIP emails."""
