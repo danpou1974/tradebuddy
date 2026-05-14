@@ -622,9 +622,25 @@ def _send_signal_emails(sig: Dict) -> dict:
 
     sent_ok = []
     smtp_error = None
+    import socket as _socket
+
+    class _SMTP_SSL_IPv4(smtplib.SMTP_SSL):
+        """Fuerza IPv4 — evita ENETUNREACH en Render donde IPv6 no tiene ruta."""
+        def _get_socket(self, host, port, timeout):
+            addrs = _socket.getaddrinfo(host, port, _socket.AF_INET, _socket.SOCK_STREAM)
+            if not addrs:
+                raise OSError(f"No se encontró dirección IPv4 para {host}")
+            af, socktype, proto, canonname, sa = addrs[0]
+            sock = _socket.socket(af, socktype, proto)
+            sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+            if timeout is not _socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            sock.connect(sa)
+            return self.context.wrap_socket(sock, server_hostname=host)
+
     context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=15) as server:
+        with _SMTP_SSL_IPv4("smtp.gmail.com", 465, context=context, timeout=15) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
             for recipient in all_recipients:
                 msg = MIMEMultipart("alternative")
