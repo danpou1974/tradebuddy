@@ -458,19 +458,17 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
-# ── Email config (Gmail SMTP) ─────────────────────────────────────────────────
-GMAIL_USER     = os.environ.get("GMAIL_USER", "")
-GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+# ── Email config (Resend HTTP API) ────────────────────────────────────────────
+# Gmail SMTP is blocked on Render. Resend uses HTTPS — works reliably.
+# Domain iatradebuddy.com verified in Resend → sends to any recipient.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM    = os.environ.get("RESEND_FROM", "TradeBuddy Signals <signals@iatradebuddy.com>")
 
 
 def _send_signal_emails(sig: Dict) -> None:
-    """Envía email con todos los detalles de la señal a los VIP emails via Gmail SMTP."""
-    import smtplib, ssl
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    if not GMAIL_USER or not GMAIL_PASSWORD:
-        print("[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido")
+    """Envía email con todos los detalles de la señal a los VIP emails via Resend."""
+    if not RESEND_API_KEY:
+        print("[email] RESEND_API_KEY no configurado — email omitido")
         return
 
     symbol    = sig.get("symbol", "")
@@ -586,20 +584,28 @@ def _send_signal_emails(sig: Dict) -> None:
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
-    context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-            server.login(GMAIL_USER, GMAIL_PASSWORD)
+        with httpx.Client(timeout=30.0) as client:
             for recipient in all_recipients:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = subject
-                msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
-                msg["To"]      = recipient
-                msg.attach(MIMEText(html, "html"))
-                server.sendmail(GMAIL_USER, recipient, msg.as_string())
-                print(f"[email] enviado a {recipient} ✓")
+                resp = client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from":    RESEND_FROM,
+                        "to":      [recipient],
+                        "subject": subject,
+                        "html":    html,
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    print(f"[email] enviado a {recipient} via Resend ✓")
+                else:
+                    print(f"[email] Resend error {resp.status_code} → {recipient}: {resp.text[:200]}")
     except Exception as e:
-        print(f"[email] error SMTP: {e}")
+        print(f"[email] Resend request failed: {e}")
 
 # Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
 # Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
@@ -1275,7 +1281,8 @@ async def test_email(admin_email: str):
     return {
         "ok": True,
         "sent_to": sorted(r for r in all_recipients if r),
-        "gmail_user": GMAIL_USER or "(no configurado)",
+        "resend_configured": bool(RESEND_API_KEY),
+        "from": RESEND_FROM,
     }
 
 
