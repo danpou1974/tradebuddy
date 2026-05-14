@@ -458,16 +458,20 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
-# ── Email config (Resend HTTP API — no SMTP, works on Render free tier) ─────────
-# SMTP (Gmail/etc) is blocked on Render's free tier. Resend uses HTTPS instead.
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-RESEND_FROM    = os.environ.get("RESEND_FROM", "TradeBuddy Signals <onboarding@resend.dev>")
+# ── Email config (Brevo HTTP API — no SMTP, works on Render free tier) ──────────
+# Brevo (ex-Sendinblue) sends via HTTPS. Free plan: 300 emails/day.
+# Only requires a verified sender EMAIL (not a full domain).
+# Set BREVO_API_KEY in Render environment variables.
+# Set BREVO_FROM_EMAIL to your verified sender email (e.g. danpou1974@gmail.com)
+BREVO_API_KEY    = os.environ.get("BREVO_API_KEY", "")
+BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL", "danpou1974@gmail.com")
+BREVO_FROM_NAME  = os.environ.get("BREVO_FROM_NAME", "TradeBuddy Signals")
 
 
 def _send_signal_emails(sig: Dict) -> None:
-    """Envía email con todos los detalles de la señal a los VIP emails via Resend."""
-    if not RESEND_API_KEY:
-        print("[email] RESEND_API_KEY no configurado — email omitido")
+    """Envía email con todos los detalles de la señal a los VIP emails via Brevo."""
+    if not BREVO_API_KEY:
+        print("[email] BREVO_API_KEY no configurado — email omitido")
         return
 
     symbol    = sig.get("symbol", "")
@@ -587,24 +591,24 @@ def _send_signal_emails(sig: Dict) -> None:
         with httpx.Client(timeout=30.0) as client:
             for recipient in all_recipients:
                 resp = client.post(
-                    "https://api.resend.com/emails",
+                    "https://api.brevo.com/v3/smtp/email",
                     headers={
-                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "api-key":      BREVO_API_KEY,
                         "Content-Type": "application/json",
                     },
                     json={
-                        "from":    RESEND_FROM,
-                        "to":      [recipient],
-                        "subject": subject,
-                        "html":    html,
+                        "sender":      {"name": BREVO_FROM_NAME, "email": BREVO_FROM_EMAIL},
+                        "to":          [{"email": recipient}],
+                        "subject":     subject,
+                        "htmlContent": html,
                     },
                 )
                 if resp.status_code in (200, 201):
-                    print(f"[email] enviado a {recipient} via Resend ✓")
+                    print(f"[email] enviado a {recipient} via Brevo ✓")
                 else:
-                    print(f"[email] Resend error {resp.status_code} → {recipient}: {resp.text[:200]}")
+                    print(f"[email] Brevo error {resp.status_code} → {recipient}: {resp.text[:200]}")
     except Exception as e:
-        print(f"[email] Resend request failed: {e}")
+        print(f"[email] Brevo request failed: {e}")
 
 # Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
 # Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
@@ -1280,8 +1284,8 @@ async def test_email(admin_email: str):
     return {
         "ok": True,
         "sent_to": sorted(r for r in all_recipients if r),
-        "resend_configured": bool(RESEND_API_KEY),
-        "from": RESEND_FROM,
+        "brevo_configured": bool(BREVO_API_KEY),
+        "from": f"{BREVO_FROM_NAME} <{BREVO_FROM_EMAIL}>",
     }
 
 
