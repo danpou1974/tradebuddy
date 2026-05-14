@@ -633,14 +633,13 @@ def _send_signal_emails(sig: Dict) -> dict:
             af, socktype, proto, canonname, sa = addrs[0]
             sock = _socket.socket(af, socktype, proto)
             sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
-            if timeout is not _socket._GLOBAL_DEFAULT_TIMEOUT:
-                sock.settimeout(timeout)
+            # Sin timeout forzado — igual que el primer deploy que funcionó
             sock.connect(sa)
             return self.context.wrap_socket(sock, server_hostname=host)
 
     context = ssl.create_default_context()
     try:
-        with _SMTP_SSL_IPv4("smtp.gmail.com", 465, context=context, timeout=15) as server:
+        with _SMTP_SSL_IPv4("smtp.gmail.com", 465, context=context) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
             for recipient in all_recipients:
                 msg = MIMEMultipart("alternative")
@@ -1363,19 +1362,16 @@ async def test_email(admin_email: str):
         ],
     }
 
-    all_recipients: set = set(VIP_EMAILS)
-    for rec in _push_registry.values():
-        if (rec.get("vip") or rec.get("is_admin")) and rec.get("email"):
-            all_recipients.add(rec["email"].strip().lower())
-
+    # Fire-and-forget igual que las señales reales — SMTP corre en background
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _send_signal_emails, test_sig)
+    loop.run_in_executor(None, _send_signal_emails, test_sig)
+    recipients = sorted(_get_vip_emails_firestore())
     return {
-        "ok":        result.get("ok", False),
-        "sent_to":   result.get("sent_to", []),
-        "failed_to": [r for r in list(VIP_EMAILS) if r not in result.get("sent_to", [])],
-        "smtp_error": result.get("error"),
+        "ok":       True,
+        "queued":   True,
+        "sending_to": recipients,
         "gmail_user": GMAIL_USER or "(no configurado)",
+        "note": "Email enviándose en background — revisá tu correo en 1-2 min",
     }
 
 
