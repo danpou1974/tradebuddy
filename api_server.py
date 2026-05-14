@@ -458,20 +458,48 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
-# ── Email config (Gmail SMTP) ─────────────────────────────────────────────────
-GMAIL_USER     = os.environ.get("GMAIL_USER", "")
-GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+# ── Email config (Resend HTTP API) ────────────────────────────────────────────
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+# Sender: usa dominio verificado si está disponible, sino el shared de Resend
+RESEND_FROM    = os.environ.get("RESEND_FROM", "TradeBuddy VIP <onboarding@resend.dev>")
+
+
+def _get_vip_emails_firestore() -> set:
+    """Lee la lista de VIP emails desde Firestore. Combina con la whitelist base."""
+    base = {"danpou1974@gmail.com", "scimelorena@hotmail.com"}
+    db = _get_firestore()
+    if not db:
+        return base
+    try:
+        doc = db.collection("config").document("vip_emails").get()
+        if doc.exists:
+            data = doc.to_dict()
+            extras = set(data.get("emails", []))
+            return base | extras
+    except Exception as e:
+        print(f"[vip_emails] firestore read error: {e}")
+    return base
+
+
+def _save_vip_emails_firestore(emails: set) -> None:
+    """Guarda la lista dinámica de VIP emails en Firestore."""
+    db = _get_firestore()
+    if not db:
+        return
+    try:
+        # Guardamos solo las extras (sin la whitelist base hardcodeada)
+        base = {"danpou1974@gmail.com", "scimelorena@hotmail.com"}
+        extras = sorted(emails - base)
+        db.collection("config").document("vip_emails").set({"emails": extras})
+    except Exception as e:
+        print(f"[vip_emails] firestore write error: {e}")
 
 
 def _send_signal_emails(sig: Dict) -> dict:
-    """Envía email con todos los detalles de la señal a los VIP emails.
+    """Envía email con todos los detalles de la señal a los VIP emails via Resend HTTP API.
     Retorna dict con ok, sent_to, error para diagnóstico."""
-    import smtplib, ssl
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    if not GMAIL_USER or not GMAIL_PASSWORD:
-        msg = "[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido"
+    if not RESEND_API_KEY:
+        msg = "[email] RESEND_API_KEY no configurado — email omitido"
         print(msg)
         return {"ok": False, "sent_to": [], "error": msg}
 
@@ -581,37 +609,46 @@ def _send_signal_emails(sig: Dict) -> dict:
 
     subject = f"{dir_emoji} Señal VIP: {symbol} {direction} — Entrada ${entry} · {leverage}x"
 
-    # Fusionar destinatarios: whitelist fija + VIPs añadidos dinámicamente via admin panel
-    all_recipients: set = set(VIP_EMAILS)
+    # Destinatarios: base hardcodeada + lista dinámica en Firestore + push registry
+    all_recipients: set = _get_vip_emails_firestore()
     for rec in _push_registry.values():
         if (rec.get("vip") or rec.get("is_admin")) and rec.get("email"):
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
+    import urllib.request
     sent_ok = []
-    smtp_error = None
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
-            server.ehlo()
-            server.starttls(context=ssl.create_default_context())
-            server.ehlo()
-            server.login(GMAIL_USER, GMAIL_PASSWORD)
-            for recipient in all_recipients:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = subject
-                msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
-                msg["To"]      = recipient
-                msg.attach(MIMEText(html, "html"))
-                server.sendmail(GMAIL_USER, recipient, msg.as_string())
-                sent_ok.append(recipient)
-                print(f"[email] enviado a {recipient} ✓")
-    except Exception as e:
-        smtp_error = str(e)
-        print(f"[email] error SMTP: {e}")
-    return {"ok": len(sent_ok) > 0, "sent_to": sent_ok, "error": smtp_error}
+    errors  = []
 
-# Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
-# Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
+    for recipient in all_recipients:
+        payload = json.dumps({
+            "from":    RESEND_FROM,
+            "to":      [recipient],
+            "subject": subject,
+            "html":    html,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type":  "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_body = resp.read().decode()
+                sent_ok.append(recipient)
+                print(f"[email] Resend OK → {recipient} | {resp_body[:80]}")
+        except Exception as e:
+            err_str = str(e)
+            errors.append(f"{recipient}: {err_str}")
+            print(f"[email] Resend error → {recipient}: {err_str}")
+
+    return {"ok": len(sent_ok) > 0, "sent_to": sent_ok, "error": "; ".join(errors) or None}
+
+# Whitelist VIP base — siempre incluidos aunque Firestore no esté disponible.
 VIP_EMAILS: set = {
     "danpou1974@gmail.com",
     "scimelorena@hotmail.com",
@@ -1248,9 +1285,53 @@ async def inject_signal(request: Request):
     return {"ok": True, "signal_id": sig["id"], "total_signals": len(_signals_history)}
 
 
+@app.get("/api/admin/vip-emails")
+async def list_vip_emails(admin_email: str):
+    """Admin: lista todos los VIP emails actuales."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    emails = sorted(_get_vip_emails_firestore())
+    return {"ok": True, "emails": emails, "count": len(emails)}
+
+
+@app.post("/api/admin/vip-emails/add")
+async def add_vip_email(admin_email: str, email: str):
+    """Admin: agrega un email a la lista VIP. Se guarda en Firestore."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    new_email = (email or "").strip().lower()
+    if not new_email or "@" not in new_email:
+        raise HTTPException(status_code=400, detail="Email inválido")
+    current = _get_vip_emails_firestore()
+    if new_email in current:
+        return {"ok": True, "message": f"{new_email} ya estaba en la lista", "emails": sorted(current)}
+    current.add(new_email)
+    _save_vip_emails_firestore(current)
+    print(f"[vip_emails] agregado: {new_email} | total: {len(current)}")
+    return {"ok": True, "message": f"{new_email} agregado", "emails": sorted(current)}
+
+
+@app.post("/api/admin/vip-emails/remove")
+async def remove_vip_email(admin_email: str, email: str):
+    """Admin: elimina un email de la lista VIP dinámica (los de la whitelist base no se pueden eliminar)."""
+    if (admin_email or "").strip().lower() != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = (email or "").strip().lower()
+    base = {"danpou1974@gmail.com", "scimelorena@hotmail.com"}
+    if target in base:
+        raise HTTPException(status_code=400, detail="No se puede eliminar un email base")
+    current = _get_vip_emails_firestore()
+    if target not in current:
+        return {"ok": True, "message": f"{target} no estaba en la lista", "emails": sorted(current)}
+    current.discard(target)
+    _save_vip_emails_firestore(current)
+    print(f"[vip_emails] eliminado: {target} | total: {len(current)}")
+    return {"ok": True, "message": f"{target} eliminado", "emails": sorted(current)}
+
+
 @app.get("/api/test-email")
 async def test_email(admin_email: str):
-    """Admin: envía un email de prueba a todos los VIP para verificar la config SMTP."""
+    """Admin: envía un email de prueba a todos los VIP emails."""
     if (admin_email or "").strip().lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Not authorized")
 
