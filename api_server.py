@@ -458,20 +458,19 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
-# ── Email config (Brevo HTTP API — no SMTP, works on Render free tier) ──────────
-# Brevo (ex-Sendinblue) sends via HTTPS. Free plan: 300 emails/day.
-# Only requires a verified sender EMAIL (not a full domain).
-# Set BREVO_API_KEY in Render environment variables.
-# Set BREVO_FROM_EMAIL to your verified sender email (e.g. danpou1974@gmail.com)
-BREVO_API_KEY    = os.environ.get("BREVO_API_KEY", "")
-BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL", "danpou1974@gmail.com")
-BREVO_FROM_NAME  = os.environ.get("BREVO_FROM_NAME", "TradeBuddy Signals")
+# ── Email config (Gmail SMTP) ─────────────────────────────────────────────────
+GMAIL_USER     = os.environ.get("GMAIL_USER", "")
+GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 
 def _send_signal_emails(sig: Dict) -> None:
-    """Envía email con todos los detalles de la señal a los VIP emails via Brevo."""
-    if not BREVO_API_KEY:
-        print("[email] BREVO_API_KEY no configurado — email omitido")
+    """Envía email con todos los detalles de la señal a los VIP emails via Gmail SMTP."""
+    import smtplib, ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_USER or not GMAIL_PASSWORD:
+        print("[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido")
         return
 
     symbol    = sig.get("symbol", "")
@@ -587,28 +586,20 @@ def _send_signal_emails(sig: Dict) -> None:
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
+    context = ssl.create_default_context()
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
             for recipient in all_recipients:
-                resp = client.post(
-                    "https://api.brevo.com/v3/smtp/email",
-                    headers={
-                        "api-key":      BREVO_API_KEY,
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "sender":      {"name": BREVO_FROM_NAME, "email": BREVO_FROM_EMAIL},
-                        "to":          [{"email": recipient}],
-                        "subject":     subject,
-                        "htmlContent": html,
-                    },
-                )
-                if resp.status_code in (200, 201):
-                    print(f"[email] enviado a {recipient} via Brevo ✓")
-                else:
-                    print(f"[email] Brevo error {resp.status_code} → {recipient}: {resp.text[:200]}")
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
+                msg["To"]      = recipient
+                msg.attach(MIMEText(html, "html"))
+                server.sendmail(GMAIL_USER, recipient, msg.as_string())
+                print(f"[email] enviado a {recipient} ✓")
     except Exception as e:
-        print(f"[email] Brevo request failed: {e}")
+        print(f"[email] error SMTP: {e}")
 
 # Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
 # Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
@@ -1284,8 +1275,7 @@ async def test_email(admin_email: str):
     return {
         "ok": True,
         "sent_to": sorted(r for r in all_recipients if r),
-        "brevo_configured": bool(BREVO_API_KEY),
-        "from": f"{BREVO_FROM_NAME} <{BREVO_FROM_EMAIL}>",
+        "gmail_user": GMAIL_USER or "(no configurado)",
     }
 
 
