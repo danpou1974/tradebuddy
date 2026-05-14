@@ -463,15 +463,17 @@ GMAIL_USER     = os.environ.get("GMAIL_USER", "")
 GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 
-def _send_signal_emails(sig: Dict) -> None:
-    """Envía email con todos los detalles de la señal a los VIP emails."""
+def _send_signal_emails(sig: Dict) -> dict:
+    """Envía email con todos los detalles de la señal a los VIP emails.
+    Retorna dict con ok, sent_to, error para diagnóstico."""
     import smtplib, ssl
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     if not GMAIL_USER or not GMAIL_PASSWORD:
-        print("[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido")
-        return
+        msg = "[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido"
+        print(msg)
+        return {"ok": False, "sent_to": [], "error": msg}
 
     symbol    = sig.get("symbol", "")
     direction = (sig.get("direction") or "").upper()
@@ -586,6 +588,8 @@ def _send_signal_emails(sig: Dict) -> None:
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
+    sent_ok = []
+    smtp_error = None
     try:
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
             server.ehlo()
@@ -599,9 +603,12 @@ def _send_signal_emails(sig: Dict) -> None:
                 msg["To"]      = recipient
                 msg.attach(MIMEText(html, "html"))
                 server.sendmail(GMAIL_USER, recipient, msg.as_string())
+                sent_ok.append(recipient)
                 print(f"[email] enviado a {recipient} ✓")
     except Exception as e:
+        smtp_error = str(e)
         print(f"[email] error SMTP: {e}")
+    return {"ok": len(sent_ok) > 0, "sent_to": sent_ok, "error": smtp_error}
 
 # Whitelist VIP — acceso manual (no pago). Espejo del frontend vipWhitelist.js.
 # Persiste en código: sobrevive reinicios de Render sin perder acceso VIP.
@@ -1273,8 +1280,14 @@ async def test_email(admin_email: str):
             all_recipients.add(rec["email"].strip().lower())
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _send_signal_emails, test_sig)
-    return {"ok": True, "sent_to": list(VIP_EMAILS), "gmail_user": GMAIL_USER or "(no configurado)"}
+    result = await loop.run_in_executor(None, _send_signal_emails, test_sig)
+    return {
+        "ok":        result.get("ok", False),
+        "sent_to":   result.get("sent_to", []),
+        "failed_to": [r for r in list(VIP_EMAILS) if r not in result.get("sent_to", [])],
+        "smtp_error": result.get("error"),
+        "gmail_user": GMAIL_USER or "(no configurado)",
+    }
 
 
 @app.get("/api/test-exchange")
