@@ -586,9 +586,11 @@ def _send_signal_emails(sig: Dict) -> None:
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
-    context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
             server.login(GMAIL_USER, GMAIL_PASSWORD)
             for recipient in all_recipients:
                 msg = MIMEMultipart("alternative")
