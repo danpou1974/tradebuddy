@@ -458,10 +458,9 @@ async def stripe_webhook(request: Request):
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
 
-# ── Email config (Resend HTTP API) ────────────────────────────────────────────
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-# Sender: usa dominio verificado si está disponible, sino el shared de Resend
-RESEND_FROM    = os.environ.get("RESEND_FROM", "TradeBuddy VIP <onboarding@resend.dev>")
+# ── Email config (Gmail SMTP_SSL — igual al primer deploy que funcionó) ───────
+GMAIL_USER     = os.environ.get("GMAIL_USER", "")
+GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 
 def _get_vip_emails_firestore() -> set:
@@ -496,10 +495,15 @@ def _save_vip_emails_firestore(emails: set) -> None:
 
 
 def _send_signal_emails(sig: Dict) -> dict:
-    """Envía email con todos los detalles de la señal a los VIP emails via Resend HTTP API.
+    """Envía email con todos los detalles de la señal a los VIP emails.
+    Usa Gmail SMTP_SSL port 465 — igual al primer deploy que funcionó.
     Retorna dict con ok, sent_to, error para diagnóstico."""
-    if not RESEND_API_KEY:
-        msg = "[email] RESEND_API_KEY no configurado — email omitido"
+    import smtplib, ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not GMAIL_USER or not GMAIL_PASSWORD:
+        msg = "[email] GMAIL_USER / GMAIL_APP_PASSWORD no configurados — email omitido"
         print(msg)
         return {"ok": False, "sent_to": [], "error": msg}
 
@@ -616,37 +620,25 @@ def _send_signal_emails(sig: Dict) -> dict:
             all_recipients.add(rec["email"].strip().lower())
     all_recipients = {r for r in all_recipients if r}  # eliminar vacíos
 
-    import urllib.request
     sent_ok = []
-    errors  = []
-
-    for recipient in all_recipients:
-        payload = json.dumps({
-            "from":    RESEND_FROM,
-            "to":      [recipient],
-            "subject": subject,
-            "html":    html,
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.resend.com/emails",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                resp_body = resp.read().decode()
+    smtp_error = None
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
+            for recipient in all_recipients:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"]    = f"TradeBuddy Signals <{GMAIL_USER}>"
+                msg["To"]      = recipient
+                msg.attach(MIMEText(html, "html"))
+                server.sendmail(GMAIL_USER, recipient, msg.as_string())
                 sent_ok.append(recipient)
-                print(f"[email] Resend OK → {recipient} | {resp_body[:80]}")
-        except Exception as e:
-            err_str = str(e)
-            errors.append(f"{recipient}: {err_str}")
-            print(f"[email] Resend error → {recipient}: {err_str}")
-
-    return {"ok": len(sent_ok) > 0, "sent_to": sent_ok, "error": "; ".join(errors) or None}
+                print(f"[email] enviado a {recipient} ✓")
+    except Exception as e:
+        smtp_error = str(e)
+        print(f"[email] error SMTP: {e}")
+    return {"ok": len(sent_ok) > 0, "sent_to": sent_ok, "error": smtp_error}
 
 # Whitelist VIP base — siempre incluidos aunque Firestore no esté disponible.
 VIP_EMAILS: set = {
