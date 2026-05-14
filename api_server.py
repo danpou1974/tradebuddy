@@ -624,7 +624,7 @@ def _send_signal_emails(sig: Dict) -> dict:
     smtp_error = None
     context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=15) as server:
             server.login(GMAIL_USER, GMAIL_PASSWORD)
             for recipient in all_recipients:
                 msg = MIMEMultipart("alternative")
