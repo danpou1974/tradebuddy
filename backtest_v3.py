@@ -8,7 +8,7 @@ MONTHS_BACK  = 3
 COOLDOWN_H   = 4
 MIN_CANDLES  = 100
 LEVERAGE_CAP = 10
-MAX_BARS     = 72   # max horas hasta resolver trade
+MAX_BARS     = 144  # max horas hasta resolver trade (6 dias — grid search óptimo)
 
 PAIRS_ALL = [
     # Mean Reversion

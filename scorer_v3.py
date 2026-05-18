@@ -627,10 +627,9 @@ def score_trend_following(
     price = r["price"]
     atr_pct = (atr_v / price) * 100 if price > 0 else 2.0
     sl_mult = 3.0 if atr_pct > 4 else (2.5 if atr_pct > 2 else 2.0)
-    sl_dist = max(atr_v * sl_mult, price * 0.015)   # mínimo 1.5%
+    sl_dist = max(atr_v * sl_mult, price * 0.030)   # mínimo 3% — grid search óptimo (WR 58%, PF 2.10)
     sl      = price - sl_dist if direction == "long" else price + sl_dist
-    # TP fijo RR 1.5 — objetivo WR 45-52% (vs Fibonacci 161.8% que daba WR 33%)
-    tp1    = price + sl_dist * 1.5 if direction == "long" else price - sl_dist * 1.5
+    tp1    = price + sl_dist * 1.5 if direction == "long" else price - sl_dist * 1.5  # RR 1.5
     rr_val = 1.5
     lev    = 3 if atr_pct > 4 else (4 if atr_pct > 2.5 else (5 if atr_pct > 1.5 else 6))
 
@@ -773,22 +772,27 @@ def score_mean_reversion(
     # ── Trade params: Fibonacci (fallback ATR) ────────────────────────────────
     atr_v   = r["atr"]
     atr_pct = (atr_v / price) * 100 if price > 0 else 2.0
-    sl_mult = 2.0 if atr_pct < 1 else (2.5 if atr_pct < 2 else 3.0)
-    atr_dist = max(atr_v * sl_mult, price * 0.010)   # mínimo 1.0%
-    atr_sl  = price - atr_dist if is_bull else price + atr_dist
-    atr_tp1 = price + atr_dist * 3.0 if is_bull else price - atr_dist * 3.0
+    # SL mínimo 3% (grid search óptimo: WR 58.3%, PF 2.10)
+    # TP = SL × 1.5 siempre (RR 1.5 óptimo)
+    atr_dist = max(atr_v * 2.0, price * 0.030)   # mínimo 3%
+    atr_sl   = price - atr_dist if is_bull else price + atr_dist
+    atr_tp1  = price + atr_dist * 1.5 if is_bull else price - atr_dist * 1.5
 
     fib_sl, fib_tp = calc_fib_tp_sl(df_1h, price, direction, "mean_reversion")
 
-    # Fibonacci válido → usarlo; si no, ATR como fallback
-    if fib_tp is not None and fib_sl is not None:
-        sl  = fib_sl
-        tp1 = fib_tp
-        rr_val = round(abs(tp1 - price) / (abs(price - sl) + 1e-10), 2)
+    # Fibonacci válido → usarlo con floor mínimo; si no, ATR como fallback
+    if fib_sl is not None and fib_tp is not None:
+        raw_sl_dist = abs(price - fib_sl)
+        raw_tp_dist = abs(fib_tp - price)
+        # Aplicar floor 3% SL y RR 1.5 TP
+        sl_dist_mr = max(raw_sl_dist, price * 0.030)
+        sl  = price - sl_dist_mr if is_bull else price + sl_dist_mr
+        tp1 = price + sl_dist_mr * 1.5 if is_bull else price - sl_dist_mr * 1.5
+        rr_val = 1.5
     else:
         sl  = atr_sl
         tp1 = atr_tp1
-        rr_val = 3.0
+        rr_val = 1.5
 
     lev = 5
 
@@ -979,9 +983,9 @@ def score_rsi_pullback(
         atr_sl    = price + max(atr_v * 1.5, price * 0.012)
         sl        = min(swing_sl, atr_sl)
 
-    sl_dist = max(abs(price - sl), price * 0.010)   # mínimo 1%
+    sl_dist = max(abs(price - sl), price * 0.030)   # mínimo 3% — grid search óptimo
     sl  = price - sl_dist if is_bull else price + sl_dist
-    tp1 = price + sl_dist * 1.5 if is_bull else price - sl_dist * 1.5
+    tp1 = price + sl_dist * 1.5 if is_bull else price - sl_dist * 1.5  # RR 1.5
     rr_val = 1.5
 
     lev = 4 if atr_pct > 3 else (5 if atr_pct > 1.5 else 6)
