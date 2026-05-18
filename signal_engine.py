@@ -11,7 +11,7 @@ CAMBIOS v3.2:
   - Cooldown: 4h (rebajado de 12h para mayor frecuencia)
   - Sin límite diario global (era 4/día)
   - PAIR_DIR_FILTER: ATOM/PAXG/ADA solo LONG, NEAR solo SHORT (backtest 1 año)
-  - BTC: estrategia mean reversion (threshold 6.0, RR 1:2, lev max 5x)
+  - BTC: estrategia mean reversion (threshold 6.0, RR 1:3, lev max 5x)
   - HMM: se mantiene para contexto de régimen (no como filtro bloqueante)
 
 scan_and_emit():
@@ -32,15 +32,16 @@ from scorer_v3 import score_signal, PAIR_STRATEGIES, PAIR_DIR_FILTER
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-# Pares activos v3.2 — backtest 1 año confirmado
-# ETH 66.7%WR·PF3.08 | BNB 60%·1.97 | ADA 57.9%·1.80 | DOT 55.6%·1.81
-# ATOM 53.1%·1.44    | NEAR 52%·2.04 | ARB 60.9%·2.23 | PAXG 51.2%·1.90
-# BTC mean reversion: WR 42%, PF 1.40, RR 1:2
+# Pares activos v3.3 — backtest 1 año confirmado
+# BNB 60%WR·PF1.97 | ADA 57.9%·1.80 | DOT 55.6%·1.81
+# ATOM 53.1%·1.44  | NEAR 52%·2.04  | ARB 60.9%·2.23 | PAXG 51.2%·1.90
+# BTC+ETH mean reversion v2: objetivo WR 52-58%, RR 1:3, ~5-10 señales/mes
 WATCHLIST = [
-    "BTC/USDT",
-    "ETH/USDT", "BNB/USDT", "ADA/USDT",
-    "DOT/USDT", "ATOM/USDT",
-    "NEAR/USDT", "ARB/USDT", "PAXG/USDT",
+    # Mean Reversion — BTC WR 48% | ETH WR 50% (backtest 3m confirmado)
+    "BTC/USDT", "ETH/USDT",
+    # RSI Pullback — LINK WR 62.5% | BNB WR 44% (backtest 3m confirmado)
+    "LINK/USDT", "BNB/USDT",
+    # DROP: SOL, AVAX, MATIC, ADA, DOT, ATOM, NEAR, ARB, PAXG — PF < 1.2 o sin datos
 ]
 
 PRIMARY_TF = "1h"
@@ -49,6 +50,7 @@ PER_ASSET_COOLDOWN_SEC = 4 * 3600    # 4h entre señales por par
 
 _hmm_cache: Dict[str, tuple] = {}   # "symbol_tf" -> (model, ts)
 _last_sent: Dict[str, float] = {}   # "symbol" -> timestamp última señal
+_btc_drop_cache: Dict[str, float] = {}  # caché BTC 4h drop check
 
 
 # ── HMM regime (caché 30 min) ────────────────────────────────────────────────
@@ -71,6 +73,33 @@ def _hmm_regime(symbol: str, tf: str, df) -> str:
 
 
 # ── Cooldown ─────────────────────────────────────────────────────────────────
+
+def _btc_crashing() -> bool:
+    """
+    Filtro BTC dominancia: si BTC cae >3% en las últimas 4 velas 1h,
+    bloquea todos los LONG en altcoins (el 85% siguen a BTC en caídas).
+    Caché de 30 min para no re-fetchar en cada par.
+    """
+    now = time.time()
+    cached_ts = _btc_drop_cache.get("ts", 0)
+    if now - cached_ts < 1800:
+        return _btc_drop_cache.get("crashing", False)
+    try:
+        frames = fetch_all_timeframes_universal("BTC/USDT", timeframes=["1h"])
+        df = frames.get("1h")
+        if df is None or len(df) < 5:
+            _btc_drop_cache.update({"ts": now, "crashing": False})
+            return False
+        ref   = float(df["close"].iloc[-5])
+        last  = float(df["close"].iloc[-1])
+        drop  = (last - ref) / (ref + 1e-10) * 100
+        crash = drop <= -3.0
+        _btc_drop_cache.update({"ts": now, "crashing": crash, "drop_pct": round(drop, 2)})
+        return crash
+    except Exception:
+        _btc_drop_cache.update({"ts": now, "crashing": False})
+        return False
+
 
 def _can_emit(symbol: str) -> bool:
     now = time.time()
@@ -128,6 +157,12 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
     """
     symbols = watchlist or WATCHLIST
     emitted: List[Dict] = []
+
+    # Filtro BTC: si BTC cae >3% en 4h, bloqueamos LONGs en altcoins
+    btc_crash = _btc_crashing()
+    if btc_crash:
+        print(f"[BTC FILTER] BTC cayendo >3% en 4h — bloqueando LONGs en altcoins")
+
     for sym in symbols:
         if not _can_emit(sym):
             continue
@@ -136,6 +171,13 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
             continue
         if not sig.get("direction"):
             continue
+
+        # Bloquear LONGs en altcoins durante crash BTC (excepto BTC/ETH MR que
+        # precisamente se benefician del pánico)
+        strategy = sig.get("strategy", "trend")
+        if btc_crash and sig["direction"] == "long" and strategy != "mean_reversion" and sym != "BTC/USDT":
+            continue
+
         emitted.append(sig)
         _mark_emitted(sym)
     return emitted
