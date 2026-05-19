@@ -862,8 +862,12 @@ def _firestore_remove_triggered_alerts(user_id: str, remaining: List[Dict]) -> N
 
 
 _signals_history: List[Dict] = _load_signals_cache()      # carga al iniciar
-_push_registry:   Dict[str, Dict] = _load_push_registry() # carga al iniciar
+_push_registry:   Dict[str, Dict] = _load_push_registry() # carga al iniciar — SOLO VIP signals
 _alerts_registry: Dict[str, List[Dict]] = _load_alerts_registry()  # carga al iniciar
+# Tokens para alertas de precio — SEPARADO de _push_registry para no mezclar VIP con no-VIP.
+# Cualquier usuario con plan pro/trader/elite puede tener alertas.
+# Las señales VIP NUNCA usan este dict — solo check_and_send_price_alerts().
+_alert_tokens:    Dict[str, str] = {}   # user_id -> ExponentPushToken
 # user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
 # Error log (últimos 200 errores)
@@ -1060,14 +1064,10 @@ async def sync_alerts(req: AlertsSyncRequest):
     """
     _alerts_registry[req.user_id] = [a.dict() for a in req.alerts if a.active]
 
-    # Registrar push token en _push_registry si viene y no estaba ya registrado
+    # Guardar push token en _alert_tokens (registro EXCLUSIVO para alertas de precio).
+    # NUNCA se toca _push_registry aquí — ese registro es solo para señales VIP.
     if req.push_token and req.push_token.startswith("ExponentPushToken"):
-        existing = _push_registry.get(req.user_id, {})
-        _push_registry[req.user_id] = {
-            **existing,                     # conserva vip, email, lang si ya existía
-            "token": req.push_token,
-        }
-        _save_push_registry()
+        _alert_tokens[req.user_id] = req.push_token
 
     # Persistir alertas en Firestore (sobreviven reinicios de Render)
     _save_alerts_registry()
@@ -1118,7 +1118,12 @@ async def check_and_send_price_alerts(prices: Dict[str, float]) -> Dict:
             continue
 
         remaining = []
-        user_rec = _push_registry.get(user_id)
+        # Buscar token: primero en _alert_tokens (todos los planes),
+        # fallback en _push_registry (VIPs que registraron token por señales).
+        # Las señales VIP NUNCA usan _alert_tokens — son registros separados.
+        push_token = _alert_tokens.get(user_id) or (
+            _push_registry.get(user_id, {}).get("token")
+        )
         total_checked += len(alerts)
 
         for alert in alerts:
@@ -1137,12 +1142,12 @@ async def check_and_send_price_alerts(prices: Dict[str, float]) -> Dict:
             if hit:
                 total_triggered += 1
                 # Solo enviar push si el usuario tiene token registrado
-                if user_rec and user_rec.get("token"):
+                if push_token:
                     arrow = "📈" if condition == "above" else "📉"
                     verb  = "superó" if condition == "above" else "cayó bajo"
                     try:
                         await send_push_batch(
-                            tokens=[user_rec["token"]],
+                            tokens=[push_token],
                             title=f"{arrow} Alerta: {symbol}",
                             body=f"{symbol} {verb} ${target:,.4g}. Precio actual: ${current_price:,.4g}",
                             data={
