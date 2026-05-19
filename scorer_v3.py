@@ -627,15 +627,15 @@ def score_trend_following(
     price = r["price"]
     atr_pct = (atr_v / price) * 100 if price > 0 else 2.0
     sl_mult = 3.0 if atr_pct > 4 else (2.5 if atr_pct > 2 else 2.0)
-    sl_dist = max(atr_v * sl_mult, price * 0.030)   # mínimo 3% — grid search óptimo
+    sl_dist = max(atr_v * sl_mult, price * 0.030)   # mínimo 3% — grid search óptimo (WR 58%, PF 2.10)
     sl      = price - sl_dist if direction == "long" else price + sl_dist
-    tp1     = price + sl_dist * 2.0 if direction == "long" else price - sl_dist * 2.0  # RR 2.0
-    rr_val  = 2.0
+    tp1     = price + sl_dist * 1.5 if direction == "long" else price - sl_dist * 1.5  # RR 1.5
+    rr_val  = 1.5
     lev     = 3 if atr_pct > 4 else (4 if atr_pct > 2.5 else (5 if atr_pct > 1.5 else 6))
 
     reasons = _build_reasons(r, direction, s1, s2, s3, s4, s5, s6, regime, higher_regime)
 
-    be_level = round(price + sl_dist * 1.0, 6) if direction == "long" else round(price - sl_dist * 1.0, 6)  # mover SL a BE cuando precio sube 1R (=SL distance)
+    be_level = round(price + sl_dist * 0.8, 6) if direction == "long" else round(price - sl_dist * 0.8, 6)
 
     return {
         "symbol": symbol,
@@ -785,13 +785,12 @@ def score_mean_reversion(
         raw_sl_dist = abs(price - fib_sl)
         sl_dist_mr = max(raw_sl_dist, price * 0.030)
         sl  = price - sl_dist_mr if is_bull else price + sl_dist_mr
-        tp1 = price + sl_dist_mr * 2.0 if is_bull else price - sl_dist_mr * 2.0  # RR 2.0
-        rr_val = 2.0
+        tp1 = price + sl_dist_mr * 1.5 if is_bull else price - sl_dist_mr * 1.5  # RR 1.5
+        rr_val = 1.5
     else:
-        sl_dist_mr = abs(price - atr_sl)
         sl  = atr_sl
-        tp1 = price + sl_dist_mr * 2.0 if is_bull else price - sl_dist_mr * 2.0  # RR 2.0
-        rr_val = 2.0
+        tp1 = atr_tp1
+        rr_val = 1.5
 
     lev = 5
 
@@ -984,8 +983,8 @@ def score_rsi_pullback(
 
     sl_dist = max(abs(price - sl), price * 0.030)    # mínimo 3% — grid search óptimo
     sl  = price - sl_dist if is_bull else price + sl_dist
-    tp1 = price + sl_dist * 2.0 if is_bull else price - sl_dist * 2.0  # RR 2.0
-    rr_val = 2.0
+    tp1 = price + sl_dist * 1.5 if is_bull else price - sl_dist * 1.5  # RR 1.5
+    rr_val = 1.5
 
     lev = 4 if atr_pct > 3 else (5 if atr_pct > 1.5 else 6)
 
