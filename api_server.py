@@ -511,7 +511,7 @@ def _send_signal_emails(sig: Dict) -> dict:
     direction = (sig.get("direction") or "").upper()
     entry     = sig.get("entry", 0)
     tp1       = sig.get("tp1", 0)
-    tp2       = sig.get("tp2", tp1)
+    # tp2 eliminado — solo TP único
     sl        = sig.get("sl", 0)
     leverage  = sig.get("leverage", 1)
     score     = sig.get("score", 0)
@@ -527,6 +527,60 @@ def _send_signal_emails(sig: Dict) -> dict:
         f'<li style="margin-bottom:6px;color:#ccc;">{r}</li>'
         for r in (reasons if isinstance(reasons, list) else [str(reasons)])
     )
+
+    # Contexto de estrategia para el email
+    _strategy_ctx = {
+        "mean_reversion": {
+            "label": "🔄 Mean Reversion",
+            "wr":    "WR histórico: 48–50%",
+            "desc":  "Rebote técnico desde zona de sobreventa extrema. "
+                     "Gates: RSI &lt; 30 · BB &lt; 20% · Stoch &lt; 35 · Vol ×1.2",
+        },
+        "rsi_pullback": {
+            "label": "📐 RSI Pullback (Connors)",
+            "wr":    "WR histórico: 44–62%",
+            "desc":  "Pullback en tendencia activa 4h. "
+                     "Gates: EMA stack 4h · ADX &gt; 20 · RSI 35–50 · Precio ± 1.5% de EMA21",
+        },
+        "trend": {
+            "label": "📊 Trend Following",
+            "wr":    "WR histórico: ~45%",
+            "desc":  "Ruptura con momentum confirmado. "
+                     "Gates: EMA 50/200 alineadas · ADX alto · volumen superior",
+        },
+    }
+    sctx = _strategy_ctx.get(strategy, {
+        "label": strategy.upper(),
+        "wr":    "",
+        "desc":  "",
+    })
+    strategy_html = f"""
+    <div style="padding:0 24px 20px;">
+      <div style="font-size:12px;color:#8b949e;font-weight:700;letter-spacing:1px;margin-bottom:8px;">
+        📋 ESTRATEGIA
+      </div>
+      <div style="background:#0d1117;border-radius:8px;padding:12px 14px;border-left:3px solid {dir_color};">
+        <div style="font-size:13px;font-weight:700;color:#e6edf3;margin-bottom:4px;">{sctx['label']}</div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:6px;">{sctx['wr']}</div>
+        <div style="font-size:11px;color:#ccc;line-height:1.6;">{sctx['desc']}</div>
+      </div>
+    </div>"""
+
+    be_level   = sig.get("be_level") or sig.get("breakeven_level") or sig.get("be")
+    be_html    = ""
+    if be_level:
+        be_html = f"""
+    <div style="padding:0 24px 20px;">
+      <div style="background:#1c2128;border-radius:8px;padding:10px 14px;
+                  border:1px solid #30363d;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:16px;">🔒</span>
+        <div>
+          <div style="font-size:10px;color:#8b949e;margin-bottom:2px;">BREAKEVEN</div>
+          <div style="font-size:14px;font-weight:700;color:#FFD600;">${be_level}</div>
+          <div style="font-size:10px;color:#484f58;">Mueve SL a entrada cuando el precio llegue aquí</div>
+        </div>
+      </div>
+    </div>"""
 
     html = f"""
 <!DOCTYPE html><html><body style="background:#0d1117;color:#e6edf3;font-family:Arial,sans-serif;margin:0;padding:24px;">
@@ -567,14 +621,9 @@ def _send_signal_emails(sig: Dict) -> dict:
       </tr>
       <tr><td height="8" colspan="3"></td></tr>
       <tr>
-        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
-          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">TP1</div>
+        <td colspan="3" style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">TAKE PROFIT</div>
           <div style="font-size:20px;font-weight:800;color:#00C896;">${tp1}</div>
-        </td>
-        <td width="8"></td>
-        <td style="text-align:center;padding:12px;background:#0d1117;border-radius:8px;">
-          <div style="font-size:10px;color:#8b949e;margin-bottom:4px;">TP2</div>
-          <div style="font-size:20px;font-weight:800;color:#00C896;">${tp2}</div>
         </td>
       </tr>
     </table>
@@ -601,6 +650,12 @@ def _send_signal_emails(sig: Dict) -> dict:
       {reasons_html}
     </ul>
   </div>
+
+  <!-- Estrategia -->
+  {strategy_html}
+
+  <!-- Breakeven -->
+  {be_html}
 
   <!-- Footer -->
   <div style="background:#0d1117;padding:14px 24px;border-top:1px solid #30363d;
