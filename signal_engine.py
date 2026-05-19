@@ -48,9 +48,10 @@ PRIMARY_TF = "1h"
 HIGHER_TF  = "4h"
 PER_ASSET_COOLDOWN_SEC = 4 * 3600    # 4h entre señales por par
 
-_hmm_cache: Dict[str, tuple] = {}   # "symbol_tf" -> (model, ts)
-_last_sent: Dict[str, float] = {}   # "symbol" -> timestamp última señal
-_btc_drop_cache: Dict[str, float] = {}  # caché BTC 4h drop check
+_hmm_cache: Dict[str, tuple] = {}    # "symbol_tf" -> (model, ts)
+_last_sent: Dict[str, float] = {}    # "symbol" -> timestamp última señal
+_btc_drop_cache: Dict[str, float] = {}  # caché BTC crash check (30 min)
+_btc_macro_cache: Dict[str, float] = {} # caché BTC macro trend (4 h)
 
 
 # ── HMM regime (caché 30 min) ────────────────────────────────────────────────
@@ -98,6 +99,44 @@ def _btc_crashing() -> bool:
         return crash
     except Exception:
         _btc_drop_cache.update({"ts": now, "crashing": False})
+        return False
+
+
+def _btc_macro_bear() -> bool:
+    """
+    Filtro macro BTC: si BTC cierra por debajo de su EMA200 en 1h
+    (≈ 8 días de tendencia), estamos en contexto bajista macro.
+
+    En modo macro bajista:
+      - Bloqueamos LONGs de tendencia y pullback en altcoins.
+      - Permitimos MR LONGs (son contrarian, funcionan igual en bajista).
+      - Permitimos todos los SHORTs.
+
+    Caché de 4 horas para no re-fetchar en cada ciclo.
+    """
+    now = time.time()
+    cached_ts = _btc_macro_cache.get("ts", 0)
+    if now - cached_ts < 4 * 3600:
+        return _btc_macro_cache.get("bear", False)
+    try:
+        import pandas as pd, numpy as np
+        frames = fetch_all_timeframes_universal("BTC/USDT", timeframes=["1h"])
+        df = frames.get("1h")
+        if df is None or len(df) < 210:
+            _btc_macro_cache.update({"ts": now, "bear": False})
+            return False
+        ema200 = df["close"].ewm(span=200, adjust=False).mean().iloc[-1]
+        price  = float(df["close"].iloc[-1])
+        bear   = price < float(ema200)
+        _btc_macro_cache.update({
+            "ts":    now,
+            "bear":  bear,
+            "price": round(price, 2),
+            "ema200": round(float(ema200), 2),
+        })
+        return bear
+    except Exception:
+        _btc_macro_cache.update({"ts": now, "bear": False})
         return False
 
 
@@ -158,10 +197,18 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
     symbols = watchlist or WATCHLIST
     emitted: List[Dict] = []
 
-    # Filtro BTC: si BTC cae >3% en 4h, bloqueamos LONGs en altcoins
-    btc_crash = _btc_crashing()
+    # ── Filtros de contexto BTC (caché independiente) ────────────────────────
+    btc_crash = _btc_crashing()       # caída aguda >3% en 4h (30 min caché)
+    btc_bear  = _btc_macro_bear()     # precio BTC < EMA200 1h (4h caché)
+
     if btc_crash:
-        print(f"[BTC FILTER] BTC cayendo >3% en 4h — bloqueando LONGs en altcoins")
+        btc_info = _btc_drop_cache
+        print(f"[BTC CRASH] BTC cayendo {btc_info.get('drop_pct', '?')}% en 4h "
+              f"— bloqueando LONGs en altcoins")
+    if btc_bear:
+        mb = _btc_macro_cache
+        print(f"[BTC MACRO BEAR] BTC ${mb.get('price','?')} < EMA200 ${mb.get('ema200','?')} "
+              f"— bloqueando LONGs de tendencia en altcoins")
 
     for sym in symbols:
         if not _can_emit(sym):
@@ -172,10 +219,18 @@ def scan_and_emit(watchlist: Optional[List[str]] = None) -> List[Dict]:
         if not sig.get("direction"):
             continue
 
-        # Bloquear LONGs en altcoins durante crash BTC (excepto BTC/ETH MR que
-        # precisamente se benefician del pánico)
-        strategy = sig.get("strategy", "trend")
-        if btc_crash and sig["direction"] == "long" and strategy != "mean_reversion" and sym != "BTC/USDT":
+        strategy  = sig.get("strategy", "trend")
+        is_long   = sig["direction"] == "long"
+        is_mr     = strategy == "mean_reversion"
+        is_btc    = sym == "BTC/USDT"
+
+        # Filtro 1: crash agudo BTC — bloquea LONGs altcoin (MR y BTC libre)
+        if btc_crash and is_long and not is_mr and not is_btc:
+            continue
+
+        # Filtro 2: contexto macro bajista BTC — bloquea LONGs de trend/pullback
+        # MR sigue activo (contrarian), SHORTs siguen activos
+        if btc_bear and is_long and not is_mr:
             continue
 
         emitted.append(sig)
