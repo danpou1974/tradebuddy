@@ -1299,16 +1299,32 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
                     except Exception as e:
                         print(f"[email] error: {e}")
 
-            # Cierre automático TP/SL
+            # Cierre automático TP/SL + alertas de precio
             active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
-            if active_syms:
-                prices = await _fetch_prices_for_signals(list(set(active_syms)))
+            alert_syms  = list({
+                a.get("symbol", "")
+                for alerts in _alerts_registry.values()
+                for a in alerts
+                if a.get("symbol")
+            })
+            all_syms = list(set(active_syms + alert_syms))
+
+            if all_syms:
+                prices = await _fetch_prices_for_signals(all_syms)
+            elif _alerts_registry:
+                # No hay señales activas pero SÍ hay alertas — fetch Binance directo
+                prices = await fetch_binance_prices()
+            else:
+                prices = {}
+
+            if active_syms and prices:
                 closed = _check_signal_outcomes(prices)
                 if closed:
                     print(f"[cron] {closed} señal(es) cerrada(s) automaticamente")
-                # Alertas de precio
-                if _alerts_registry:
-                    await check_and_send_price_alerts(prices)
+
+            # Alertas de precio — siempre se chequean independientemente de señales
+            if _alerts_registry and prices:
+                await check_and_send_price_alerts(prices)
 
         except Exception as e:
             print(f"[cron] scan error: {e}")
@@ -1362,6 +1378,38 @@ async def scan_status(admin_email: str):
     if (admin_email or "").strip().lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="Not authorized")
     return _last_scan_status
+
+
+@app.get("/api/status")
+async def system_status():
+    """
+    Estado público del sistema — sin autenticación.
+    Útil para verificar que el backend está vivo y los registros tienen datos.
+    """
+    import time as _t
+    total_alerts = sum(len(v) for v in _alerts_registry.values())
+    return {
+        "status":          "ok",
+        "ts":              int(_t.time()),
+        "signals": {
+            "total_history":   len(_signals_history),
+            "open":            sum(1 for s in _signals_history if not s.get("outcome")),
+            "last_symbol":     _signals_history[0].get("symbol") if _signals_history else None,
+        },
+        "push_registry": {
+            "total_users":     len(_push_registry),
+            "vip_users":       sum(1 for r in _push_registry.values() if r.get("vip")),
+        },
+        "alerts": {
+            "users_with_alerts": len(_alerts_registry),
+            "total_active":      total_alerts,
+        },
+        "last_scan": {
+            "status":    _last_scan_status.get("status"),
+            "finished":  _last_scan_status.get("finished_at"),
+            "duration_s": _last_scan_status.get("duration_s"),
+        },
+    }
 
 
 @app.post("/api/signals/inject")
