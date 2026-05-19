@@ -810,12 +810,62 @@ def _save_push_registry() -> None:
         print(f"[firestore] push_registry save error: {e}")
 
 
-_signals_history: List[Dict] = _load_signals_cache()   # carga al iniciar
-_push_registry:   Dict[str, Dict] = _load_push_registry()  # carga al iniciar
+# ── Alerts registry — persistencia en Firestore ──────────────────────────────
+_ALERTS_REGISTRY_DOC = "alerts_registry"
+
+def _load_alerts_registry() -> Dict[str, List[Dict]]:
+    """Carga alertas de precio desde Firestore al arrancar (sobrevive reinicios)."""
+    db = _get_firestore()
+    if not db:
+        return {}
+    try:
+        doc = db.collection("vip_signals").document(_ALERTS_REGISTRY_DOC).get()
+        if doc.exists:
+            data = doc.to_dict()
+            reg = data.get("registry", {})
+            if isinstance(reg, dict) and reg:
+                total = sum(len(v) for v in reg.values())
+                print(f"[firestore] {total} alerta(s) de precio cargadas para {len(reg)} usuario(s)")
+                return reg
+    except Exception as e:
+        print(f"[firestore] alerts_registry load error: {e}")
+    return {}
+
+def _save_alerts_registry() -> None:
+    """Persiste _alerts_registry en Firestore."""
+    db = _get_firestore()
+    if not db:
+        return
+    try:
+        db.collection("vip_signals").document(_ALERTS_REGISTRY_DOC).set({
+            "registry": _alerts_registry,
+            "updated_at": admin_firestore.SERVER_TIMESTAMP,
+        })
+    except Exception as e:
+        print(f"[firestore] alerts_registry save error: {e}")
+
+def _firestore_remove_triggered_alerts(user_id: str, remaining: List[Dict]) -> None:
+    """
+    Actualiza el documento del usuario en Firestore eliminando las alertas disparadas.
+    Así, cuando el usuario abra la app, no verá ni re-sincronizará las alertas ya procesadas.
+    """
+    db = _get_firestore()
+    if not db:
+        return
+    try:
+        db.collection("users").document(user_id).set(
+            {"alerts": remaining},
+            merge=True,
+        )
+    except Exception as e:
+        print(f"[firestore] remove triggered alerts error for {user_id}: {e}")
+
+
+_signals_history: List[Dict] = _load_signals_cache()      # carga al iniciar
+_push_registry:   Dict[str, Dict] = _load_push_registry() # carga al iniciar
+_alerts_registry: Dict[str, List[Dict]] = _load_alerts_registry()  # carga al iniciar
 # user_id -> signal_id -> {"action": "took"|"passed", "ts": ...}
 _signal_tracking: Dict[str, Dict[str, Dict]] = {}
-# user_id -> list of price alert dicts
-_alerts_registry: Dict[str, List[Dict]] = {}
 # Error log (últimos 200 errores)
 _error_log: List[Dict] = []
 _ERROR_LOG_MAX = 200
@@ -998,12 +1048,30 @@ class AlertItem(BaseModel):
 class AlertsSyncRequest(BaseModel):
     user_id: str
     alerts: List[AlertItem]
+    push_token: Optional[str] = None   # Expo push token — para enviar push aunque no sea VIP
 
 
 @app.post("/api/alerts/sync")
 async def sync_alerts(req: AlertsSyncRequest):
-    """El frontend sincroniza su lista completa de alertas al backend."""
+    """
+    El frontend sincroniza su lista completa de alertas al backend.
+    También registra el push token del usuario para poder enviar push aunque
+    no esté en el registro VIP (cualquier plan con alertas lo tiene).
+    """
     _alerts_registry[req.user_id] = [a.dict() for a in req.alerts if a.active]
+
+    # Registrar push token en _push_registry si viene y no estaba ya registrado
+    if req.push_token and req.push_token.startswith("ExponentPushToken"):
+        existing = _push_registry.get(req.user_id, {})
+        _push_registry[req.user_id] = {
+            **existing,                     # conserva vip, email, lang si ya existía
+            "token": req.push_token,
+        }
+        _save_push_registry()
+
+    # Persistir alertas en Firestore (sobreviven reinicios de Render)
+    _save_alerts_registry()
+
     return {"ok": True, "stored": len(_alerts_registry[req.user_id])}
 
 
@@ -1090,8 +1158,14 @@ async def check_and_send_price_alerts(prices: Dict[str, float]) -> Dict:
             else:
                 remaining.append(alert)
 
-        # Actualizar el registro sin las alertas disparadas
+        # Actualizar el registro en memoria y Firestore
         _alerts_registry[user_id] = remaining
+        if len(remaining) < len(alerts):   # al menos una alerta se disparó
+            # Persiste el estado actualizado (sin las disparadas)
+            _save_alerts_registry()
+            # También actualiza el documento del usuario en Firestore
+            # para que la app no re-sincronice alertas ya procesadas
+            _firestore_remove_triggered_alerts(user_id, remaining)
 
     return {"checked": total_checked, "triggered": total_triggered}
 
