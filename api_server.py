@@ -216,8 +216,32 @@ async def health():
     return {"status": "ok", "service": "TradeBuddy API"}
 
 
+# ── Rate limit for /api/chat (per-IP, sliding window) ────────────────────────
+# Protects the Groq API budget from spam / scrapers.
+_chat_rate_limits: Dict[str, List[float]] = {}
+_CHAT_RATE_LIMIT_PER_MIN = 30
+_CHAT_RATE_WINDOW_SEC    = 60
+
+
+def _allow_chat_request(client_ip: str) -> bool:
+    import time as _time
+    now = _time.time()
+    bucket = [t for t in _chat_rate_limits.get(client_ip, []) if now - t < _CHAT_RATE_WINDOW_SEC]
+    if len(bucket) >= _CHAT_RATE_LIMIT_PER_MIN:
+        _chat_rate_limits[client_ip] = bucket
+        return False
+    bucket.append(now)
+    _chat_rate_limits[client_ip] = bucket
+    return True
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    # Rate limit: 30 requests / minute / IP (Groq cost protection)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _allow_chat_request(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
+
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
 
@@ -353,7 +377,7 @@ async def detect_regime(req: RegimeRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"HMM error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Regime detection error: {str(e)}")
 
 
 # ===== Stripe Payment Endpoints =====
@@ -457,6 +481,38 @@ async def stripe_webhook(request: Request):
 
 ADMIN_EMAIL = "danpou1974@gmail.com"
 SCAN_SECRET = os.environ.get("SCAN_SECRET", "buddy-scan-secret-change-me")
+
+# ── Admin auth ────────────────────────────────────────────────────────────────
+# Every admin endpoint requires both the admin email AND a secret header.
+# Fail-closed: if ADMIN_SECRET is not configured in env, admin endpoints return 503.
+# Configure in Render dashboard: Environment → ADMIN_SECRET = <long random string>
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
+
+_ADMIN_PATHS = {
+    "/api/admin/toggle-vip", "/api/admin/users", "/api/admin/stats",
+    "/api/admin/vip-emails", "/api/admin/vip-emails/add", "/api/admin/vip-emails/remove",
+    "/api/admin/referrals", "/api/admin/referral/toggle",
+    "/api/errors", "/api/scan-signals/debug", "/api/scan-status",
+    "/api/signals/inject", "/api/smtp-check", "/api/test-email", "/api/test-exchange",
+    "/api/referral/create",
+}
+
+@app.middleware("http")
+async def admin_secret_guard(request: Request, call_next):
+    """Enforce X-Admin-Secret header on all admin endpoints. Defense in depth
+    alongside the existing per-endpoint admin_email check."""
+    if request.url.path in _ADMIN_PATHS:
+        if not ADMIN_SECRET:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Admin disabled: ADMIN_SECRET not configured on server"},
+            )
+        if request.headers.get("X-Admin-Secret") != ADMIN_SECRET:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Invalid or missing X-Admin-Secret header"},
+            )
+    return await call_next(request)
 
 # ── Email config (Gmail SMTP_SSL — igual al primer deploy que funcionó) ───────
 GMAIL_USER     = os.environ.get("GMAIL_USER", "")
