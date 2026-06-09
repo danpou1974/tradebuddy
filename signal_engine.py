@@ -37,11 +37,10 @@ from scorer_v3 import score_signal, PAIR_STRATEGIES, PAIR_DIR_FILTER
 # ATOM 53.1%·1.44  | NEAR 52%·2.04  | ARB 60.9%·2.23 | PAXG 51.2%·1.90
 # BTC+ETH mean reversion v2: objetivo WR 52-58%, RR 1:3, ~5-10 señales/mes
 WATCHLIST = [
-    # Mean Reversion — BTC WR 48% | ETH WR 50% (backtest 3m confirmado)
-    "BTC/USDT", "ETH/USDT",
-    # RSI Pullback — LINK WR 62.5% | BNB WR 44% (backtest 3m confirmado)
-    "LINK/USDT", "BNB/USDT",
-    # DROP: SOL, AVAX, MATIC, ADA, DOT, ATOM, NEAR, ARB, PAXG — PF < 1.2 o sin datos
+    # Ganadores validados — backtest 12 meses por trimestres (2026-06):
+    #   BNB +408% (2/4 trim) | LINK +196% (2/4) | PAXG +126% (3/4) | ARB +50% (2/4)
+    "BNB/USDT", "LINK/USDT", "PAXG/USDT", "ARB/USDT",
+    # SACADOS: BTC/ETH mean-reversion — perdían -260%/-138% (atajaban cuchillos en bear)
 ]
 
 PRIMARY_TF = "1h"

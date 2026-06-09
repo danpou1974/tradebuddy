@@ -38,14 +38,11 @@ SIGNAL_THRESHOLD = 8.5
 BTC_MR_THRESHOLD = 6.0      # balance calidad/frecuencia — gates de calidad, threshold 6.0
 
 PAIR_STRATEGIES: Dict[str, str] = {
-    # Mean Reversion — backtest 3m: BTC WR 48% PF 1.53 | ETH WR 50% PF 2.42
-    "BTC/USDT":  "mean_reversion",
-    "ETH/USDT":  "mean_reversion",
-    # RSI Pullback — backtest 3m: LINK WR 62.5% PF 2.40 | BNB WR 44% PF 1.15
+    # RSI Pullback — ganadores backtest 12m: LINK +196% | BNB +408%
     "LINK/USDT": "pullback",
     "BNB/USDT":  "pullback",
-    # DROP: SOL WR 33% PF 0.76, AVAX WR 36% PF 0.78, MATIC sin datos
-    # DROP: ADA/DOT/ATOM/NEAR/ARB/PAXG — Trend generó 0-2 señales en 3 meses
+    # PAXG y ARB usan 'trend' (default) — ganadores backtest 12m (+126% / +50%)
+    # SACADOS BTC/ETH mean_reversion: perdían -260% / -138% (atajaban cuchillos en bear)
 }
 
 PAIR_DIR_FILTER: Dict[str, str] = {
