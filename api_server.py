@@ -898,7 +898,9 @@ def _firestore_remove_triggered_alerts(user_id: str, remaining: List[Dict]) -> N
         print(f"[firestore] remove triggered alerts error for {user_id}: {e}")
 
 
-_signals_history: List[Dict] = _load_signals_cache()      # carga al iniciar
+# Producto de señales VIP retirado — el historial arranca vacío y se limpia el cache persistido.
+_signals_history: List[Dict] = []
+_save_signals_cache(_signals_history)
 _push_registry:   Dict[str, Dict] = _load_push_registry() # carga al iniciar — SOLO VIP signals
 _alerts_registry: Dict[str, List[Dict]] = _load_alerts_registry()  # carga al iniciar
 # Tokens para alertas de precio — SEPARADO de _push_registry para no mezclar VIP con no-VIP.
