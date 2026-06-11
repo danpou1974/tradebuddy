@@ -73,27 +73,8 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(application):
-    """Ejecuta un scan al iniciar para poblar _signals_history desde el arranque."""
-    async def _startup_scan():
-        await asyncio.sleep(10)   # espera a que el servidor esté listo
-        try:
-            loop = asyncio.get_event_loop()
-            new_sigs = await loop.run_in_executor(None, scan_and_emit)
-            for s in new_sigs:
-                s["id"] = f"{s['symbol'].replace('/', '')}_{s['generated_at']}"
-                _signals_history.insert(0, s)
-            if len(_signals_history) > _SIGNALS_MAX:
-                del _signals_history[_SIGNALS_MAX:]
-            if new_sigs:
-                _save_signals_cache(_signals_history)
-            cached = _load_signals_cache()
-            if not new_sigs and cached:
-                print(f"[startup] sin señales nuevas — {len(cached)} señal(es) cargadas del cache")
-            else:
-                print(f"[startup] scan OK — {len(new_sigs)} señal(es) nueva(s)")
-        except Exception as e:
-            print(f"[startup] scan error: {e}")
-    asyncio.create_task(_startup_scan())
+    """Producto de señales VIP retirado (2026-06): ya NO se hace scan al arrancar.
+    Las alertas de precio siguen funcionando vía /api/scan-signals y /api/alerts/check."""
     yield
 
 app = FastAPI(title="TradeBuddy API", version="1.0.0", lifespan=lifespan)
@@ -1323,75 +1304,32 @@ async def scan_signals(x_scan_secret: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=403, detail="Bad secret")
 
     async def _run_scan():
+        # Señales VIP retiradas — este endpoint ya NO genera ni notifica señales.
+        # Se conserva SOLO para chequear las alertas de precio (cron cada 15 min).
         try:
-            loop = asyncio.get_event_loop()
-            new_signals = await loop.run_in_executor(None, scan_and_emit)
-
-            for sig in new_signals:
-                sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
-                _signals_history.insert(0, sig)
-
-                # Push notifications por idioma
-                vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
-                by_lang: Dict[str, List[str]] = {}
-                for r in vip_records:
-                    by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
-                for lang, tokens in by_lang.items():
-                    msg = build_signal_message(sig, lang=lang)
-                    await send_push_batch(
-                        tokens=tokens,
-                        title=msg["title"],
-                        body=msg["body"],
-                        data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
-                        channel_id="vip-signals",
-                    )
-
-            # Trim + persistir
-            if len(_signals_history) > _SIGNALS_MAX:
-                del _signals_history[_SIGNALS_MAX:]
-            if new_signals:
-                _save_signals_cache(_signals_history)
-                print(f"[cron] {len(new_signals)} señal(es) nueva(s) guardadas")
-                # Enviar email a todos los VIP
-                for sig in new_signals:
-                    try:
-                        await asyncio.get_event_loop().run_in_executor(
-                            None, _send_signal_emails, sig)
-                    except Exception as e:
-                        print(f"[email] error: {e}")
-
-            # Cierre automático TP/SL + alertas de precio
-            active_syms = [s["symbol"] for s in _signals_history if not s.get("outcome") and s.get("symbol")]
-            alert_syms  = list({
+            alert_syms = list({
                 a.get("symbol", "")
                 for alerts in _alerts_registry.values()
                 for a in alerts
                 if a.get("symbol")
             })
-            all_syms = list(set(active_syms + alert_syms))
 
-            if all_syms:
-                prices = await _fetch_prices_for_signals(all_syms)
+            if alert_syms:
+                prices = await _fetch_prices_for_signals(alert_syms)
             elif _alerts_registry:
-                # No hay señales activas pero SÍ hay alertas — fetch Binance directo
                 prices = await fetch_binance_prices()
             else:
                 prices = {}
 
-            if active_syms and prices:
-                closed = _check_signal_outcomes(prices)
-                if closed:
-                    print(f"[cron] {closed} señal(es) cerrada(s) automaticamente")
-
-            # Alertas de precio — siempre se chequean independientemente de señales
+            # Alertas de precio — único trabajo restante de este cron
             if _alerts_registry and prices:
                 await check_and_send_price_alerts(prices)
 
         except Exception as e:
-            print(f"[cron] scan error: {e}")
+            print(f"[cron] alert check error: {e}")
 
     asyncio.create_task(_run_scan())
-    return {"ok": True, "status": "scan iniciado en background"}
+    return {"ok": True, "status": "alert check iniciado en background"}
 
 
 @app.get("/api/scan-signals/debug")
@@ -1475,59 +1413,12 @@ async def system_status():
 
 @app.post("/api/signals/inject")
 async def inject_signal(request: Request):
-    """
-    Admin endpoint: inyecta una señal manual al historial VIP.
-    Útil para agregar señales reales cuando el mercado no genera setups automáticos.
-    Body: { "admin_email": "...", "signal": { symbol, direction, entry, sl, tp1, leverage, reasons: [...] } }
-    """
-    body = await request.json()
-    if (body.get("admin_email") or "").strip().lower() != ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    sig = body.get("signal", {})
-    if not sig.get("symbol") or not sig.get("direction") or not sig.get("entry"):
-        raise HTTPException(status_code=400, detail="signal.symbol, direction y entry son obligatorios")
-
-    import time as _t
-    sig.setdefault("generated_at", int(_t.time()))
-    sig.setdefault("strategy",     "manual")
-    sig.setdefault("score",        10.0)
-    sig.setdefault("leverage",     sig.get("leverage", 5))
-    sig.setdefault("reasons",      sig.get("reasons", ["Señal manual ingresada por el admin."]))
-    sig["id"] = f"{sig['symbol'].replace('/', '')}_{sig['generated_at']}"
-
-    _signals_history.insert(0, sig)
-    if len(_signals_history) > _SIGNALS_MAX:
-        del _signals_history[_SIGNALS_MAX:]
-    _save_signals_cache(_signals_history)
-
-    # Notificar a todos los VIP (push + email) — igual que el cron automático
-    async def _notify_injected():
-        # Push por idioma
-        vip_records = [r for r in _push_registry.values() if r.get("vip") or r.get("is_admin")]
-        by_lang: Dict[str, List[str]] = {}
-        for r in vip_records:
-            if r.get("token"):
-                by_lang.setdefault(r.get("lang", "en"), []).append(r["token"])
-        for lang, tokens in by_lang.items():
-            msg = build_signal_message(sig, lang=lang)
-            await send_push_batch(
-                tokens=tokens,
-                title=msg["title"],
-                body=msg["body"],
-                data={"type": "vip_signal", "signal_id": sig["id"], "symbol": sig["symbol"]},
-                channel_id="vip-signals",
-            )
-        # Email
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _send_signal_emails, sig)
-        except Exception as e:
-            print(f"[inject] email error: {e}")
-
-    asyncio.create_task(_notify_injected())
-
-    return {"ok": True, "signal_id": sig["id"], "total_signals": len(_signals_history)}
+    """Retirado — el producto de señales VIP fue eliminado de TradeBuddy. No-op."""
+    return {
+        "ok": False,
+        "status": "signals_disabled",
+        "detail": "El producto de señales fue retirado de TradeBuddy.",
+    }
 
 
 @app.get("/api/admin/vip-emails")
