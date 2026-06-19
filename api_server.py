@@ -260,9 +260,11 @@ async def chat(req: ChatRequest, request: Request):
         if not reply:
             raise HTTPException(status_code=500, detail="Empty response from AI")
 
-        # Try to detect asset title
+        # Detecta el nombre del activo para el encabezado (p. ej. "Bitcoin", "ETH/USDT", "AAPL").
+        # \b ancla el inicio de palabra y {2,14} cubre nombres largos como "Bitcoin"/"Ethereum"
+        # (el viejo {2,6} cortaba la primera letra y devolvía "itcoin" en vez de "Bitcoin").
         title = None
-        match = re.search(r'\*?\*?(\w+/\w+|\w{2,6})\*?\*?\s*\(', reply)
+        match = re.search(r'\*?\*?\b(\w+/\w+|\w{2,14})\*?\*?\s*\(', reply)
         if match:
             title = match.group(1)
 
