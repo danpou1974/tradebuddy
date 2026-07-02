@@ -35,14 +35,19 @@ YAHOO_TF = {
     "1h": {"period":"1mo", "interval":"1h"},
     "4h": {"period":"3mo", "interval":"1h"},   # Yahoo no tiene 4h, usamos 1h
     "1d": {"period":"2y",  "interval":"1d"},
+    "1w": {"period":"10y", "interval":"1wk"},  # semanal: 10 años ≈ 520 velas
 }
 
-BINANCE_TF    = {"5m":"5m","15m":"15m","1h":"1h","4h":"4h","1d":"1d"}
-BINANCE_LIMIT = {"5m":300,"15m":300,"1h":300,"4h":200,"1d":300}
+BINANCE_TF    = {"5m":"5m","15m":"15m","1h":"1h","4h":"4h","1d":"1d","1w":"1w"}
+BINANCE_LIMIT = {"5m":300,"15m":300,"1h":300,"4h":200,"1d":300,"1w":300}
+
+# Timeframes por defecto para fetch_all (el semanal solo se pide explícitamente,
+# p. ej. desde /api/regime — así los flujos existentes no suman un fetch extra)
+DEFAULT_TFS = ["5m","15m","1h","4h","1d"]
 
 # Mapeos de timeframe para cada exchange
-_KUCOIN_TF = {"5m":"5min","15m":"15min","1h":"1hour","4h":"4hour","1d":"1day"}
-_OKX_TF    = {"5m":"5m",  "15m":"15m",  "1h":"1H",   "4h":"4H",  "1d":"1D"}
+_KUCOIN_TF = {"5m":"5min","15m":"15min","1h":"1hour","4h":"4hour","1d":"1day","1w":"1week"}
+_OKX_TF    = {"5m":"5m",  "15m":"15m",  "1h":"1H",   "4h":"4H",  "1d":"1D",  "1w":"1W"}
 
 
 class CryptoFetcher:
@@ -194,7 +199,7 @@ class CryptoFetcher:
         return df.astype(float)
 
     def fetch_all_timeframes(self, timeframes=None):
-        tfs  = timeframes or list(BINANCE_TF.keys())
+        tfs  = timeframes or DEFAULT_TFS
         data = {}
         for tf in tfs:
             try:
@@ -246,7 +251,7 @@ class YahooFetcher:
             return pd.DataFrame()
 
     def fetch_all_timeframes(self, timeframes=None):
-        tfs  = timeframes or list(YAHOO_TF.keys())
+        tfs  = timeframes or DEFAULT_TFS
         data = {}
         for tf in tfs:
             print(f"  [YAHOO] {self.symbol} {tf}...")

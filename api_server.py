@@ -282,7 +282,7 @@ async def chat(req: ChatRequest, request: Request):
 
 class RegimeRequest(BaseModel):
     symbol: str  # e.g. "BTC/USDT", "ETH/USDT", "AAPL", "EUR/USD"
-    timeframe: str = "1d"  # "5m", "15m", "1h", "4h", "1d"
+    timeframe: str = "1d"  # "5m", "15m", "1h", "4h", "1d", "1w"
 
 
 class RegimeResponse(BaseModel):
@@ -309,10 +309,11 @@ async def detect_regime(req: RegimeRequest):
     now = _time.time()
 
     try:
-        # Fetch OHLCV data
+        # Fetch OHLCV data — solo el timeframe pedido (evita 4 fetches innecesarios
+        # por request y habilita el semanal, que no está en los TF por defecto)
         df = None
         try:
-            data = fetch_all_timeframes_universal(req.symbol)
+            data = fetch_all_timeframes_universal(req.symbol, [req.timeframe])
             df = data.get(req.timeframe)
         except Exception as e:
             print(f"Data fetch error for {req.symbol}: {e}")
