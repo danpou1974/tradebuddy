@@ -105,28 +105,38 @@ def evaluate_states(X, min_s=3, max_s=7):
     return pd.DataFrame(rows)
 
 
-def assign_labels(model, feature_names):
+def assign_labels(model, feature_names, scaler=None):
     """
-    Asigna nombres de régimen a cada estado del HMM.
-    Ordena los estados por score de tendencia (retorno/volatilidad)
-    de más bajista a más alcista y asigna los nombres correspondientes.
+    Asigna nombres de régimen a cada estado del HMM con umbrales ABSOLUTOS.
+
+    El etiquetado anterior era relativo (ranking): el estado "menos bajista" del
+    período se llamaba siempre "Alcista Fuerte" aunque TODOS los estados tuvieran
+    retorno negativo — en un dataset bajista, un simple rebote quedaba etiquetado
+    como alcista. Ahora el retorno medio de cada estado se des-estandariza y se
+    compara contra la dispersión global del retorno del activo (auto-escalado por
+    temporalidad): un estado con retorno medio negativo nunca se llama "Alcista".
     """
     ri = feature_names.index("log_return")
-    vi = feature_names.index("volatility")
-    rets = model.means_[:, ri]
-    vols = model.means_[:, vi]
-    n    = model.n_components
+    means_z = model.means_[:, ri]                       # medias por estado (espacio z-score)
 
-    # Score de tendencia: positivo = alcista, negativo = bajista
-    scores = rets / (np.abs(vols) + 1e-10)
-    order  = np.argsort(scores)  # ascendente: más bajista primero
-
-    # Seleccionar lista de regímenes según n_states
-    regime_list = N_STATE_REGIMES.get(n, ALL_REGIMES_ORDERED[:n])
+    if scaler is not None:
+        mu, sd = float(scaler.mean_[ri]), float(scaler.scale_[ri])
+        rets = mu + means_z * sd                        # retorno medio real por barra
+        t    = rets / (sd + 1e-12)                      # en unidades de sigma global
+    else:
+        t = means_z                                     # fallback: z-score (sin sesgo global)
 
     labels = {}
-    for rank, state_idx in enumerate(order):
-        labels[int(state_idx)] = regime_list[rank]
+    for i in range(model.n_components):
+        x = float(t[i])
+        if   x >  0.90: name = "Alcista Fuerte"
+        elif x >  0.45: name = "Alcista"
+        elif x >  0.15: name = "Acumulación"
+        elif x > -0.15: name = "Lateral"
+        elif x > -0.45: name = "Distribución"
+        elif x > -0.90: name = "Bajista"
+        else:           name = "Bajista Fuerte"
+        labels[int(i)] = name
 
     print(f"    Regimenes: {labels}")
     return labels
@@ -154,7 +164,7 @@ class RegimeHMM:
             self.n_states = int(self.aic_bic_table.loc[self.aic_bic_table["bic"].idxmin(), "n_states"])
             print(f"    Auto: {self.n_states} estados")
         self.model  = _train_hmm(X, self.n_states, self.n_iter, self.tol)
-        self.labels = assign_labels(self.model, self.feature_names)
+        self.labels = assign_labels(self.model, self.feature_names, self.scaler)
         return self
 
     def predict(self, df):
