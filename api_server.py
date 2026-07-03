@@ -216,6 +216,25 @@ def _allow_chat_request(client_ip: str) -> bool:
     return True
 
 
+# ── Rate limit for /api/regime (per-IP) ──────────────────────────────────────
+# Entrenar el HMM es la operación más cara del servidor: sin límite, una sola IP
+# podría saturarlo gratis. Mismo mecanismo de ventana deslizante que el chat.
+_regime_rate_limits: Dict[str, List[float]] = {}
+_REGIME_RATE_LIMIT_PER_MIN = 20
+
+
+def _allow_regime_request(client_ip: str) -> bool:
+    import time as _time_rl
+    now = _time_rl.time()
+    bucket = [t for t in _regime_rate_limits.get(client_ip, []) if now - t < _CHAT_RATE_WINDOW_SEC]
+    if len(bucket) >= _REGIME_RATE_LIMIT_PER_MIN:
+        _regime_rate_limits[client_ip] = bucket
+        return False
+    bucket.append(now)
+    _regime_rate_limits[client_ip] = bucket
+    return True
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
     # Rate limit: 30 requests / minute / IP (Groq cost protection)
@@ -300,11 +319,15 @@ import time as _time
 
 
 @app.post("/api/regime", response_model=RegimeResponse)
-async def detect_regime(req: RegimeRequest):
+async def detect_regime(req: RegimeRequest, request: Request):
     """
     Real HMM regime detection using trained Gaussian HMM.
     Fetches market data, builds features, trains/caches model, returns regime.
     """
+    client_ip = request.client.host if request.client else "unknown"
+    if not _allow_regime_request(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
+
     cache_key = f"{req.symbol}_{req.timeframe}"
     now = _time.time()
 
