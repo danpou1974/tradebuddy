@@ -86,7 +86,27 @@ def _train_hmm(X, n_states, n_iter=300, tol=1e-5):
     )
     model.means_init = km.cluster_centers_
     model.fit(X)
+    _sanitize_hmm(model, n_states)
     return model
+
+
+def _sanitize_hmm(model, n_states):
+    """Un estado que nunca se visita deja su fila de transmat en 0, y hmmlearn
+    falla en predict()/score() con 'transmat_ rows must sum to 1'. Reemplazamos
+    esa fila por auto-transicion (el estado es inalcanzable igual) y normalizamos
+    filas + startprob por si degeneran."""
+    tm = np.array(model.transmat_, dtype=float)
+    for i in range(n_states):
+        s = tm[i].sum()
+        if s <= 1e-12:
+            tm[i] = 0.0
+            tm[i, i] = 1.0
+        elif abs(s - 1.0) > 1e-9:
+            tm[i] /= s
+    model.transmat_ = tm
+    sp = np.array(model.startprob_, dtype=float)
+    ssum = sp.sum()
+    model.startprob_ = (sp / ssum) if ssum > 1e-12 else np.full(n_states, 1.0 / n_states)
 
 
 def evaluate_states(X, min_s=3, max_s=7):
@@ -190,15 +210,22 @@ class RegimeHMM:
         for s in reversed(arr[:-1]):
             if s == state: stab += 1
             else: break
+        regime = self.labels.get(state, "Desconocido")
+        # Suma las probabilidades de los estados que comparten etiqueta (con
+        # umbrales absolutos varios estados pueden llamarse igual). El dict por
+        # comprension anterior pisaba las claves repetidas -> posteriors y
+        # confianza incoherentes. La confianza pasa a ser la prob total del
+        # regimen ganador (no la de un solo sub-estado).
+        post: dict = {}
+        for i in range(self.model.n_components):
+            lbl = self.labels.get(i, f"S{i}")
+            post[lbl] = post.get(lbl, 0.0) + float(last[f"prob_{i}"])
         return {
-            "regime":     self.labels.get(state, "Desconocido"),
+            "regime":     regime,
             "state":      state,
-            "confidence": float(last["confidence"]),
+            "confidence": float(post.get(regime, last["confidence"])),
             "stability":  stab,
-            "posteriors": {
-                self.labels.get(i, f"S{i}"): float(last[f"prob_{i}"])
-                for i in range(self.model.n_components)
-            },
+            "posteriors": post,
         }
 
     def transition_df(self):
