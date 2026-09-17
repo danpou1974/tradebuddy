@@ -91,7 +91,7 @@ app.add_middleware(
 # Groq config — key from environment variable (set in Render dashboard)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.3-70b-versatile"
+MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")  # llama-3.3-70b-versatile fue deprecado por Groq (2026)
 
 # Stripe config — keys from environment variables
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
