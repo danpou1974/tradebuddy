@@ -80,7 +80,7 @@ def _train_hmm(X, n_states, n_iter=300, tol=1e-5):
     km = KMeans(n_clusters=n_states, random_state=42, n_init=10)
     km.fit(X)
     model = GaussianHMM(
-        n_components=n_states, covariance_type="full",
+        n_components=n_states, covariance_type="diag",
         n_iter=n_iter, tol=tol, random_state=42,
         init_params="stc", params="stmc",
     )
