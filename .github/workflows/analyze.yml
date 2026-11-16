@@ -2,7 +2,7 @@ name: Analizar billeteras Hyperliquid
 on:
   push:
     branches: [hl-wallet-scout]
-    paths-ignore: ['results/**', 'README.md']
+    paths: ['index.html', 'scripts/analyze.mjs', '.github/workflows/analyze.yml']
   workflow_dispatch:
 permissions:
   contents: write
