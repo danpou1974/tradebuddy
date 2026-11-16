@@ -314,7 +314,7 @@ function filterLeaderboard(rows, f) {
  * Maneja aumentos, reducciones parciales, flips (long→short) y posiciones abiertas
  * antes de la ventana (marcadas partial=true: sin hold time confiable).
  */
-function buildTrades(fills) {
+function buildTrades(fills, addr) {
   const EPS = 1e-9;
   const fs = fills.filter(f => /Long|Short/.test(f.dir || ''))          // solo perps (excluye spot Buy/Sell)
                   .slice().sort((a, b) => a.time - b.time || (a.tid || 0) - (b.tid || 0));
@@ -332,7 +332,7 @@ function buildTrades(fills) {
       open.set(f.coin, t);
     }
     t.pnl += num(f.closedPnl); t.fee += num(f.fee); t.n++;
-    if (f.liquidation) t.liq = true;
+    if (f.liquidation && (!addr || String(f.liquidation.liquidatedUser || '').toLowerCase() === addr)) t.liq = true; // solo si ELLA fue liquidada
     const closes = Math.abs(start) > EPS && (Math.abs(end) <= EPS || Math.sign(end) !== Math.sign(start));
     if (!closes) { t.maxNtl = Math.max(t.maxNtl, Math.abs(end) * px); continue; }
     t.close = f.time; t.net = t.pnl - t.fee;
@@ -351,30 +351,40 @@ function avAt(hist, ts) {
   return num(hist[ans][1]);
 }
 
-/** Max drawdown de la curva de PnL, relativo al capital en el pico (inmune a depósitos/retiros) */
-function maxDrawdown(pnlH, avH) {
-  if (!pnlH || pnlH.length < 2) return null;
-  let peak = -Infinity, peakAv = 0, dd = 0;
-  for (const [ts, v] of pnlH) {
-    const p = num(v);
-    if (p > peak) { peak = p; peakAv = avAt(avH, ts); }
-    if (peakAv > 0) dd = Math.max(dd, (peak - p) / peakAv);
+/**
+ * Índice de rendimiento ponderado en el tiempo (TWR): cada tramo rinde ΔPnL ÷ capital al inicio del tramo.
+ * Inmune a depósitos/retiros. Devuelve [[ts, índice]] arrancando en 1.
+ */
+function twrIndex(pnlH, avH) {
+  if (!pnlH || pnlH.length < 2) return [];
+  const idx = [[pnlH[0][0], 1]]; let v = 1;
+  for (let i = 1; i < pnlH.length; i++) {
+    const base = avAt(avH, pnlH[i - 1][0]);
+    if (base >= 100) v *= 1 + Math.max(-1, (num(pnlH[i][1]) - num(pnlH[i - 1][1])) / base);
+    idx.push([pnlH[i][0], v]);
   }
+  return idx;
+}
+
+/** Max drawdown sobre el índice TWR (fracción 0-1) */
+function maxDrawdown(pnlH, avH) {
+  const idx = twrIndex(pnlH, avH); if (idx.length < 2) return null;
+  let peak = -Infinity, dd = 0;
+  for (const [, v] of idx) { peak = Math.max(peak, v); if (peak > 0) dd = Math.max(dd, (peak - v) / peak); }
   return Math.min(dd, 1);
 }
 
-/** Detalle del peor drawdown: profundidad, fechas de pico/valle y cuándo recuperó (null = no recuperó) */
+/** Detalle del peor drawdown (sobre índice TWR): profundidad, pico/valle y recuperación (null = no recuperó) */
 function ddDetails(pnlH, avH) {
-  if (!pnlH || pnlH.length < 2) return null;
-  let peak = -Infinity, peakTs = null, peakAv = 0, best = { dd: 0 };
-  for (const [ts, v] of pnlH) {
-    const p = num(v);
-    if (p > peak) { peak = p; peakTs = ts; peakAv = avAt(avH, ts); }
-    const dd = peakAv > 0 ? (peak - p) / peakAv : 0;
+  const idx = twrIndex(pnlH, avH); if (idx.length < 2) return null;
+  let peak = -Infinity, peakTs = null, best = { dd: 0 };
+  for (const [ts, v] of idx) {
+    if (v > peak) { peak = v; peakTs = ts; }
+    const dd = peak > 0 ? (peak - v) / peak : 0;
     if (dd > best.dd) best = { dd: Math.min(dd, 1), peakTs, troughTs: ts, peakVal: peak };
   }
   if (!best.troughTs) return { dd: 0, recDays: 0 };
-  const rec = pnlH.find(([ts, v]) => ts > best.troughTs && num(v) >= best.peakVal);
+  const rec = idx.find(([ts, v]) => ts > best.troughTs && v >= best.peakVal);
   return { dd: best.dd, peakTs: best.peakTs, troughTs: best.troughTs, recTs: rec ? rec[0] : null,
     recDays: rec ? (rec[0] - best.troughTs) / DAY : null, fallDays: (best.troughTs - best.peakTs) / DAY };
 }
@@ -384,12 +394,12 @@ function tailRisk(closed, avH) {
   if (!closed.length) return { worstTrade: null, worstTradePct: 0, worstDay: null, worstDayPct: 0, worstWeek: null, worstWeekPct: 0, maxLossStreak: 0, streakLoss: 0 };
   let worst = null, worstPct = 0;
   for (const t of closed) {
-    const a = avAt(avH, t.open), pct = a > 0 ? -t.net / a : 0;
+    const a = avAt(avH, t.open), pct = a >= 100 ? -t.net / a : 0;
     if (!worst || t.net < worst.net) worst = { coin: t.coin, side: t.side, net: t.net, close: t.close, liq: t.liq, pct };
     worstPct = Math.max(worstPct, pct);
   }
   const bucket = size => { const m = new Map(); for (const t of closed) { const k = Math.floor(t.close / size); m.set(k, (m.get(k) || 0) + t.net); }
-    let w = null; for (const [k, v] of m) if (!w || v < w.net) w = { ts: k * size, net: v }; if (w) { const a = avAt(avH, w.ts); w.pct = a > 0 ? -w.net / a : 0; } return w; };
+    let w = null; for (const [k, v] of m) if (!w || v < w.net) w = { ts: k * size, net: v }; if (w) { const a = avAt(avH, w.ts); w.pct = a >= 100 ? -w.net / a : 0; } return w; };
   const wd = bucket(DAY), ww = bucket(WEEK);
   let streak = 0, maxStreak = 0, cur = 0, streakLoss = 0;
   for (const t of [...closed].sort((a, b) => a.close - b.close)) {
@@ -511,12 +521,13 @@ function curveAt(curve, ts) { let v = null; for (const [t, e] of curve) { if (t 
 /** Métricas completas de una billetera */
 function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now }) {
   const P = Object.fromEntries(portfolio || []);
-  const pAll = P.perpAllTime || P.allTime, pM = P.perpMonth || P.month, pW = P.perpWeek || P.week, pD = P.perpDay || P.day;
-  const avH = (P.allTime || pAll || {}).accountValueHistory || [];
+  const pAll = P.allTime || P.perpAllTime, pM = P.month || P.perpMonth, pW = P.week || P.perpWeek, pD = P.day || P.perpDay; // cuenta TOTAL (perps + spot)
+  const avH = mergedAvHistory(portfolio);
 
   // Estado actual
   const ms = (state && state.marginSummary) || {};
-  const av = num(ms.accountValue), ntl = num(ms.totalNtlPos);
+  const totalAv = avH.length ? avH.at(-1)[1] : 0;
+  const av = Math.max(num(ms.accountValue), totalAv), ntl = num(ms.totalNtlPos);  // valor TOTAL de la cuenta
   const positions = ((state && state.assetPositions) || []).map(x => x.position).filter(Boolean).map(p => ({
     coin: p.coin, side: num(p.szi) > 0 ? 'Long' : 'Short', szi: num(p.szi), entry: num(p.entryPx),
     value: num(p.positionValue), upnl: num(p.unrealizedPnl), roe: num(p.returnOnEquity),
@@ -524,7 +535,7 @@ function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now })
     liq: p.liquidationPx == null ? null : num(p.liquidationPx) }));
 
   // Trades
-  const { closed, open } = buildTrades(fills || []);
+  const { closed, open } = buildTrades(fills || [], addr);
   const walletStart = avH.length ? avH[0][0] : start;
   const winStart = Math.max(start, walletStart);
   const days = Math.max(1, (now - winStart) / DAY);
@@ -533,7 +544,7 @@ function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now })
   const pf = gL > 0 ? gW / gL : (gW > 0 ? Infinity : null);
   const wr = closed.length ? wins.length / closed.length : null;
   const holds = closed.filter(t => !t.partial).map(t => (t.close - t.open) / 60000);
-  const levs = closed.concat(open).map(t => { const a = avAt(avH, t.open); return a > 0 ? t.maxNtl / a : null; })
+  const levs = closed.concat(open).map(t => { const a = avAt(avH, t.open); return a >= 100 ? t.maxNtl / a : null; })
                      .filter(x => x != null && x > 0 && x < 200);
   const tim = (now - winStart) > 0
     ? unionLength(closed.map(t => [Math.max(t.open, winStart), t.close]).concat(open.map(t => [Math.max(t.open, winStart), now]))) / (now - winStart)
@@ -796,6 +807,9 @@ const RK_COLS = [
   { k: 'streak', h: 'Racha perd.', v: r => -(r.maxLossStreak || 0), f: r => r.maxLossStreak ?? '—', tip: 'Máximo de trades perdedores seguidos' },
   { k: 'payoff', h: 'Payoff', v: r => r.payoff, f: r => r.payoff == null ? '—' : r.payoff.toFixed(2), tip: 'Ganancia promedio ÷ pérdida promedio. <1 con WR alto = deja correr pérdidas' },
   { k: 'weeksPos', h: 'Sem. +', v: r => r.weeksPos, f: r => fmtPct(r.weeksPos), tip: '% de semanas con PnL positivo (90d)' },
+  { k: 'sim180', h: 'Copia 1000 · 180d', v: r => r.sim180 ? r.sim180.roi : null, f: r => r.sim180 ? fmtPct(r.sim180.roi) : '—', cls: r => r.sim180 ? cls(r.sim180.roi) : '', tip: 'Tu resultado copiando con 1000 USDT los últimos 180 días (fees, slippage y mínimos incluidos)' },
+  { k: 'hit', h: 'Días a +1000', v: r => r.sim180 && r.sim180.hitDays != null ? -r.sim180.hitDays : -1e9, f: r => !r.sim180 ? '—' : r.sim180.hitDays == null ? '<span class="mut">no llegó</span>' : `${r.sim180.hitDays.toFixed(0)} d` },
+  { k: 'skipSim', h: 'Órdenes omitidas', v: r => r.sim180 ? -r.sim180.skippedPct : null, f: r => r.sim180 ? fmtPct(r.sim180.skippedPct) : '—', cls: r => r.sim180 && r.sim180.skippedPct > 0.3 ? 'warn' : '', tip: '% de órdenes por debajo del mínimo de 5 USDT con tu capital' },
   { k: 'coins', h: 'Monedas', f: r => (r.coins || []).join(', '), l: 1 },
   { k: 'flags', h: 'Alertas', f: r => (r.flags || []).map(x => `<span class="tag">${esc(x)}</span>`).join(''), l: 1 },
 ];
@@ -1141,6 +1155,24 @@ function exportCsv() {
   } catch { copyText(csv); }
 }
 
+/** Carga el último análisis corrido en GitHub Actions (results/analysis.json, mismo origen) */
+async function loadServerResults() {
+  try {
+    const r = await fetch('results/analysis.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json(), ts = Date.parse(d.generated);
+    let n = 0;
+    for (const m of d.wallets || []) {
+      if (m.error || !m.addr) continue;
+      const cur = S.metrics.get(m.addr);
+      if (!cur || (cur.updated || 0) < ts) { m.updated = ts; S.metrics.set(m.addr, m); n++; }
+    }
+    if (n) { saveMetrics(); renderRk(); }
+    $('progTxt').textContent = `Análisis del servidor: ${fmtDate(ts)} · ${d.wallets.length} billeteras`;
+    setStatus('Resultados del servidor cargados');
+  } catch { /* sin resultados publicados: modo normal */ }
+}
+
 function init() {
   // tabs
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
@@ -1185,6 +1217,7 @@ function init() {
   $('drawer').onclick = e => { if (e.target.id === 'drawer') $('drawer').classList.remove('on'); };
   renderRk(); updateLbButtons();
   $('lbCount').textContent = 'Cargá el leaderboard para empezar.';
+  loadServerResults();
 }
 
 if (typeof document !== 'undefined') init();
