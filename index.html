@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HL Wallet Scout — Hyperliquid</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --panel2:#18202b; --line:#253041; --txt:#e6edf3; --mut:#8b98a8;
+    --acc:#4cc2ff; --pos:#2ecc71; --neg:#ff5c5c; --warn:#f5b041;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:16px;margin:0}
+  header h1 span{color:var(--acc)}
+  #status{color:var(--mut);font-size:12px}
+  nav{display:flex;gap:4px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+  nav button{background:none;border:1px solid transparent;color:var(--mut);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
+  nav button.on{color:var(--txt);border-color:var(--line);background:var(--panel2)}
+  main{padding:12px 16px}
+  section{display:none} section.on{display:block}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+  label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mut)}
+  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 8px;font:inherit}
+  textarea{width:100%;min-height:70px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  button.b{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:7px 12px;border-radius:6px;cursor:pointer;font:inherit}
+  button.b:hover{border-color:var(--acc)}
+  button.p{background:var(--acc);color:#001522;border-color:var(--acc);font-weight:600}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .chk{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut)}
+  .tw{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:8px}
+  table{border-collapse:collapse;width:100%;white-space:nowrap}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right}
+  th{position:sticky;top:0;background:var(--panel2);color:var(--mut);font-weight:500;cursor:pointer;user-select:none;z-index:1}
+  th.s::after{content:" ▾"} th.s.asc::after{content:" ▴"}
+  td:first-child,th:first-child,td.l,th.l{text-align:left}
+  td.sticky,th.sticky{position:sticky;left:0;background:var(--panel);z-index:2}
+  th.sticky{z-index:3;background:var(--panel2)}
+  tr:hover td{background:#16202c}
+  tr.clk{cursor:pointer}
+  .pos{color:var(--pos)} .neg{color:var(--neg)} .mut{color:var(--mut)} .warn{color:var(--warn)}
+  .addr{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .tag{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px;border:1px solid var(--line);margin-right:3px;color:var(--warn)}
+  .score{display:inline-block;min-width:34px;text-align:center;padding:2px 6px;border-radius:6px;font-weight:600}
+  .bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:6px}
+  .bar>div{height:100%;background:var(--acc);width:0;transition:width .3s}
+  details summary{cursor:pointer;color:var(--acc)}
+  details ul{margin:6px 0;padding-left:18px;color:var(--mut)}
+  details li b{color:var(--txt)}
+  .star{cursor:pointer;font-size:15px;color:var(--mut)} .star.on{color:var(--warn)}
+  #drawer{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:10}
+  #drawer.on{display:block}
+  #drawer .in{position:absolute;right:0;top:0;bottom:0;width:min(720px,100%);background:var(--bg);border-left:1px solid var(--line);overflow:auto;padding:16px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:10px 0}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px}
+  .kpi .k{font-size:11px;color:var(--mut)} .kpi .v{font-size:16px;font-weight:600}
+  .err{color:var(--neg)}
+  a{color:var(--acc)}
+  @media (max-width:600px){ main{padding:8px} header{padding:10px} th,td{padding:5px 6px} }
+</style>
+</head>
+<body>
+<header>
+  <h1>HL <span>Wallet Scout</span> · Hyperliquid Perps</h1>
+  <div id="status">Listo</div>
+</header>
+<nav>
+  <button data-tab="discover" class="on">1 · Descubrir</button>
+  <button data-tab="ranking">2 · Ranking analizado</button>
+  <button data-tab="sim">3 · Simulador de copia</button>
+</nav>
+<main>
+
+<!-- ================= TAB DESCUBRIR ================= -->
+<section id="tab-discover" class="on">
+  <div class="card">
+    <div class="row">
+      <button class="b p" id="btnLoadLb">Cargar leaderboard de Hyperliquid</button>
+      <label class="b" style="cursor:pointer">… o cargar JSON manual <input type="file" id="lbFile" accept=".json,application/json" hidden></label>
+      <span id="lbInfo" class="mut"></span>
+    </div>
+    <details style="margin-top:10px">
+      <summary>¿Qué busca el filtro "Copiables"?</summary>
+      <ul>
+        <li><b>Capital real</b> (≥ $50k): descarta cuentas chicas con ROI inflado por suerte.</li>
+        <li><b>Rentable a largo plazo</b>: PnL total y ROI total positivos, no solo una semana buena.</li>
+        <li><b>En forma ahora</b>: ROI 30d &gt; 5% y la semana no muy negativa.</li>
+        <li><b>No HFT / market maker</b>: volumen 30d ÷ capital ≤ 300× (esos no se pueden copiar).</li>
+        <li><b>Tus reglas</b> (pestaña 2, activadas por defecto): opera <b>largos y cortos</b> (≥ 20% de entradas en el lado minoritario) y <b>≤ 10 entradas por día</b>.</li>
+        <li>Después, el <b>análisis profundo</b> (pestaña 2) mira sus fills de 90 días: win rate, profit factor, drawdown, apalancamiento real, tiempo de holding y semanas en verde.</li>
+      </ul>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <label class="f">Preset
+        <select id="preset"></select>
+      </label>
+      <span class="mut" style="font-size:12px">ROI en %. Dejá vacío para no filtrar.</span>
+    </div>
+    <div class="grid" id="filters">
+      <label class="f">Capital mín ($)<input type="number" id="f_minAV"></label>
+      <label class="f">PnL total mín ($)<input type="number" id="f_minPnlAll"></label>
+      <label class="f">ROI total mín (%)<input type="number" id="f_minRoiAll"></label>
+      <label class="f">ROI 30d mín (%)<input type="number" id="f_minRoiM"></label>
+      <label class="f">ROI 30d máx (%)<input type="number" id="f_maxRoiM"></label>
+      <label class="f">ROI 7d mín (%)<input type="number" id="f_minRoiW"></label>
+      <label class="f">ROI 24h mín (%)<input type="number" id="f_minRoiD"></label>
+      <label class="f">Vol30d ÷ Capital máx (×)<input type="number" id="f_maxVlmRatio"></label>
+      <label class="f">Ordenar por
+        <select id="f_sort">
+          <option value="pre">Pre-score</option><option value="roiM">ROI 30d</option><option value="roiA">ROI total</option>
+          <option value="pnlM">PnL 30d</option><option value="pnlA">PnL total</option><option value="av">Capital</option>
+        </select>
+      </label>
+      <label class="chk" style="align-self:end"><input type="checkbox" id="f_active" checked> Solo activas (vol 30d &gt; 0)</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="b" id="btnApply">Aplicar filtros</button>
+      <span id="lbCount" class="mut"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <label class="f">Analizar top N<input type="number" id="topN" value="25" min="1" max="300" style="width:90px"></label>
+      <button class="b p" id="btnAnalyzeTop" disabled>Analizar top N</button>
+      <button class="b" id="btnAnalyzeSel" disabled>Analizar seleccionadas</button>
+      <button class="b" id="btnWatchSel" disabled>★ Agregar seleccionadas a mi lista</button>
+    </div>
+    <div class="tw"><table id="lbTable"></table></div>
+    <div class="mut" style="font-size:11px;margin-top:6px">Se muestran hasta 300 filas. Tocá una fila para seleccionarla.</div>
+  </div>
+</section>
+
+<!-- ================= TAB RANKING ================= -->
+<section id="tab-ranking">
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>Mi lista / agregar billeteras</b>
+      <span class="mut" style="font-size:12px">Una por línea. Opcional: <span class="addr">0xabc… - Apodo</span></span>
+    </div>
+    <textarea id="pasteBox" placeholder="0x1234...abcd - Ballena1&#10;0x5678...ef01"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="b p" id="btnAddPaste">Agregar a mi lista y analizar</button>
+      <button class="b p" id="btnAnalyzeWatch">Analizar toda mi lista ★</button>
+      <button class="b" id="btnRefresh">Actualizar todo lo visible</button>
+      <button class="b" id="btnCancel" disabled>Cancelar</button>
+      <button class="b" id="btnCsv">Exportar CSV</button>
+      <button class="b" id="btnCopyAddr">Copiar direcciones</button>
+    </div>
+    <div class="bar"><div id="prog"></div></div>
+    <div id="progTxt" class="mut" style="font-size:12px;margin-top:4px"></div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <label class="chk"><input type="checkbox" id="r_onlyWatch"> Solo mi lista ★</label>
+      <label class="chk"><input type="checkbox" id="r_hideHft" checked> Ocultar scalpers/HFT</label>
+      <label class="f">Score copia mín<input type="number" id="r_minScore"></label>
+      <label class="f">Trades mín (90d)<input type="number" id="r_minTrades" value="10"></label>
+      <label class="f">Win rate mín (%)<input type="number" id="r_minWr"></label>
+      <label class="f">Max DD máx (%)<input type="number" id="r_maxDd"></label>
+      <label class="f">Lev prom máx (×)<input type="number" id="r_maxLev"></label>
+      <label class="f">Hold mediano mín (min)<input type="number" id="r_minHold"></label>
+      <label class="f">Agresividad máx<input type="number" id="r_maxAggr"></label>
+      <label class="chk"><input type="checkbox" id="r_hideBurned" checked> Excluir cuentas quemadas 🔥</label>
+      <label class="f">Peor trade máx (% de su cuenta)<input type="number" id="r_maxWorst" value="15"></label>
+      <label class="f">Largos y cortos: lado minoritario mín (%)<input type="number" id="r_minMinor" value="20" title="20 = al menos 20% de sus entradas en el lado menos usado"></label>
+      <label class="f">Entradas por día máx<input type="number" id="r_maxEntries" value="10"></label>
+      <label class="f">Medir entradas/día por
+        <select id="r_entriesMode"><option value="entriesDay">Promedio por día operado</option><option value="p90EntriesDay">Percentil 90 (días fuertes)</option><option value="maxEntriesDay">Día máximo (estricto)</option></select>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="tw"><table id="rkTable"></table></div>
+    <div class="mut" style="font-size:11px;margin-top:6px">Tocá una fila para ver detalle: curva de PnL, posiciones abiertas y últimos trades. Ventana de análisis: 90 días de fills.</div>
+  </div>
+</section>
+
+<!-- ================= TAB SIMULADOR ================= -->
+<section id="tab-sim">
+  <div class="card">
+    <b>Parámetros de copia</b>
+    <div class="mut" style="font-size:12px;margin:4px 0 8px">Tu posición = su posición × (tu capital ÷ capital total de su cuenta). Si él abre 5% de su cuenta y agrega otro 5%, vos también. Cierra cuando él cierra.</div>
+    <div class="grid">
+      <label class="f">Capital por billetera (USDT)<input type="number" id="s_cap" value="1000"></label>
+      <label class="f">Meta de ganancia para sumar la siguiente (USDT)<input type="number" id="s_target" value="1000"></label>
+      <label class="f">Ventana histórica
+        <select id="s_days"><option value="30">30 días</option><option value="90" selected>90 días</option><option value="180">180 días</option></select>
+      </label>
+      <label class="f">Fee por orden (%)<input type="number" id="s_fee" value="0.05" step="0.01"></label>
+      <label class="f">Slippage / retraso (%)<input type="number" id="s_slip" value="0.05" step="0.01"></label>
+      <label class="f">Orden mínima (USDT)<input type="number" id="s_min" value="5"></label>
+      <label class="f">Apalancamiento total máx (×)<input type="number" id="s_lev" value="10"></label>
+      <label class="f">Monedas a ignorar (no listadas en Pionex)<input type="text" id="s_ignore" placeholder="ej: kPEPE, PURR"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <b style="margin-right:auto">A · Backtest individual (cada billetera con tu capital)</b>
+      <button class="b p" id="btnSimAll">Simular todas las del ranking visible</button>
+    </div>
+    <div class="tw"><table id="simTable"></table></div>
+    <div class="mut" style="font-size:11px;margin-top:6px">"Copia ideal" = sin fees, slippage ni mínimos. La diferencia con "Tu copia" es lo que te cuesta copiar. Tocá una fila para ver la curva.</div>
+    <div id="simDetail" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <b>B · Plan escalonado</b>
+    <div class="mut" style="font-size:12px;margin:4px 0 8px">Arranca copiando la #1 con tu capital. Cuando esa llega a la meta, entra la siguiente billetera. Se repite en cadena.</div>
+    <div class="grid">
+      <label class="f">Orden de billeteras
+        <select id="p_src"><option value="sim">Mejor resultado del backtest A</option><option value="score">Score copia (ranking visible)</option><option value="watch">Mi lista ★ (orden en que las agregué)</option></select>
+      </label>
+      <label class="f">Financiar la siguiente con
+        <select id="p_fund"><option value="profit">La ganancia (retiro la meta y la paso)</option><option value="new">Aporte nuevo (sumo capital)</option></select>
+      </label>
+      <label class="f">Máx billeteras en el plan<input type="number" id="p_max" value="10"></label>
+    </div>
+    <div class="row" style="margin-top:8px"><button class="b p" id="btnPlan">Simular plan</button></div>
+    <div id="planOut" style="margin-top:10px"></div>
+  </div>
+</section>
+</main>
+
+<div id="drawer"><div class="in" id="drawerIn"></div></div>
+
+<script>
+'use strict';
+/* =========================================================================
+   HL Wallet Scout — dashboard para descubrir y rankear billeteras de
+   futuros en Hyperliquid. Todo corre en tu navegador contra la API pública
+   (sin claves, sin servidor).
+   ========================================================================= */
+
+const CFG = {
+  API: 'https://api.hyperliquid.xyz/info',
+  LB_URL: 'https://stats-data.hyperliquid.xyz/Mainnet/leaderboard',
+  WEIGHT_PER_MIN: 900,     // límite oficial 1200/min por IP; dejamos margen
+  FILL_DAYS: 90,           // ventana de análisis de fills
+  MAX_FILL_PAGES: 5,       // 5 × 2000 fills máx por billetera
+  CONCURRENCY: 2,          // billeteras analizadas en paralelo
+  CACHE_TTL_H: 6,          // horas que un análisis se considera fresco
+  LB_MAX_ROWS: 300,        // filas mostradas en tabla Descubrir
+};
+const DAY = 864e5, WEEK = 7 * DAY;
+
+/* ---------------------------- helpers puros ---------------------------- */
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const clamp01 = x => Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
+const sum = a => a.reduce((s, x) => s + x, 0);
+const mean = a => a.length ? sum(a) / a.length : null;
+const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const isAddr = s => /^0x[a-fA-F0-9]{40}$/.test(s);
+
+/** Leaderboard crudo → filas normalizadas */
+function parseLeaderboard(json) {
+  const rows = Array.isArray(json) ? json : (json.leaderboardRows || []);
+  const z = { pnl: 0, roi: 0, vlm: 0 };
+  return rows.filter(r => r && r.ethAddress).map(r => {
+    const w = {};
+    for (const [k, v] of (r.windowPerformances || [])) w[k] = { pnl: num(v.pnl), roi: num(v.roi), vlm: num(v.vlm) };
+    const row = { addr: r.ethAddress.toLowerCase(), name: r.displayName || '', av: num(r.accountValue),
+      d: w.day || z, w: w.week || z, m: w.month || z, a: w.allTime || z };
+    row.vlmRatio = row.av > 0 ? row.m.vlm / row.av : Infinity;
+    row.pre = preScore(row);
+    return row;
+  });
+}
+
+/** Pre-score 0-100 con datos del leaderboard (antes del análisis profundo) */
+function preScore(r) {
+  const s = 0.30 * clamp01(r.m.roi / 0.5)                               // ROI 30d (50% = tope)
+          + 0.20 * clamp01(Math.log10(1 + Math.max(0, r.a.roi)))        // ROI total (900% = tope)
+          + 0.20 * clamp01(Math.log10(1 + Math.max(0, r.a.pnl)) / 7)    // PnL total ($10M = tope)
+          + 0.10 * (r.w.roi > 0 ? 1 : 0)
+          + 0.05 * (r.d.roi > 0 ? 1 : 0)
+          + 0.15 * clamp01(Math.log10(1 + r.av) / 7);                   // tamaño de cuenta
+  return Math.round(100 * s);
+}
+
+const PRESETS = {
+  copiables:   { label: 'Copiables (recomendado)', minAV: 50000, minPnlAll: 10000, minRoiAll: 20, minRoiM: 5, maxRoiM: '', minRoiW: -10, minRoiD: '', maxVlmRatio: 300, active: true, sort: 'pre' },
+  consistentes:{ label: 'Consistentes (todo en verde)', minAV: 25000, minPnlAll: 5000, minRoiAll: 0, minRoiM: 0, maxRoiM: '', minRoiW: 0, minRoiD: 0, maxVlmRatio: 300, active: true, sort: 'pre' },
+  racha:       { label: 'En racha (momentum)', minAV: 10000, minPnlAll: 0, minRoiAll: '', minRoiM: 20, maxRoiM: '', minRoiW: 10, minRoiD: '', maxVlmRatio: 500, active: true, sort: 'roiM' },
+  ballenas:    { label: 'Ballenas rentables', minAV: 1000000, minPnlAll: 1000000, minRoiAll: '', minRoiM: '', maxRoiM: '', minRoiW: '', minRoiD: '', maxVlmRatio: 1000, active: true, sort: 'pnlA' },
+  swing:       { label: 'Swing traders tranquilos', minAV: 25000, minPnlAll: 10000, minRoiAll: 10, minRoiM: 0, maxRoiM: 100, minRoiW: -15, minRoiD: '', maxVlmRatio: 40, active: true, sort: 'pre' },
+  todos:       { label: 'Sin filtros', minAV: '', minPnlAll: '', minRoiAll: '', minRoiM: '', maxRoiM: '', minRoiW: '', minRoiD: '', maxVlmRatio: '', active: false, sort: 'pnlA' },
+};
+
+/** Aplica filtros del leaderboard. f: valores numéricos o null (ROI en fracción) */
+function filterLeaderboard(rows, f) {
+  const ok = (v, min, max) => (min == null || v >= min) && (max == null || v <= max);
+  const out = rows.filter(r =>
+    ok(r.av, f.minAV) && ok(r.a.pnl, f.minPnlAll) && ok(r.a.roi, f.minRoiAll) &&
+    ok(r.m.roi, f.minRoiM, f.maxRoiM) && ok(r.w.roi, f.minRoiW) && ok(r.d.roi, f.minRoiD) &&
+    (f.maxVlmRatio == null || r.vlmRatio <= f.maxVlmRatio) &&
+    (!f.active || r.m.vlm > 0));
+  const key = { pre: r => r.pre, roiM: r => r.m.roi, roiA: r => r.a.roi, pnlM: r => r.m.pnl, pnlA: r => r.a.pnl, av: r => r.av }[f.sort] || (r => r.pre);
+  return out.sort((a, b) => key(b) - key(a));
+}
+
+/**
+ * Reconstruye trades (ciclos de posición 0 → abierto → 0) por moneda a partir de fills.
+ * Maneja aumentos, reducciones parciales, flips (long→short) y posiciones abiertas
+ * antes de la ventana (marcadas partial=true: sin hold time confiable).
+ */
+function buildTrades(fills) {
+  const EPS = 1e-9;
+  const fs = fills.filter(f => /Long|Short/.test(f.dir || ''))          // solo perps (excluye spot Buy/Sell)
+                  .slice().sort((a, b) => a.time - b.time || (a.tid || 0) - (b.tid || 0));
+  const open = new Map(), closed = [];
+  const newTrade = (f, side, ntl, partial) => ({ coin: f.coin, side, open: f.time, partial, pnl: 0, fee: 0, maxNtl: ntl, n: 0, liq: false });
+  for (const f of fs) {
+    const sz = num(f.sz), px = num(f.px), start = num(f.startPosition);
+    const signed = f.side === 'B' ? sz : -sz;
+    const end = +(start + signed).toFixed(10);
+    let t = open.get(f.coin);
+    if (!t) {
+      t = Math.abs(start) > EPS
+        ? newTrade(f, start > 0 ? 'Long' : 'Short', Math.abs(start) * px, true)
+        : newTrade(f, signed > 0 ? 'Long' : 'Short', 0, false);
+      open.set(f.coin, t);
+    }
+    t.pnl += num(f.closedPnl); t.fee += num(f.fee); t.n++;
+    if (f.liquidation) t.liq = true;
+    const closes = Math.abs(start) > EPS && (Math.abs(end) <= EPS || Math.sign(end) !== Math.sign(start));
+    if (!closes) { t.maxNtl = Math.max(t.maxNtl, Math.abs(end) * px); continue; }
+    t.close = f.time; t.net = t.pnl - t.fee;
+    closed.push(t); open.delete(f.coin);
+    if (Math.abs(end) > EPS) open.set(f.coin, newTrade(f, end > 0 ? 'Long' : 'Short', Math.abs(end) * px, false)); // flip
+  }
+  return { closed, open: [...open.values()] };
+}
+
+/** Valor de cuenta en el instante ts (último punto ≤ ts) */
+function avAt(hist, ts) {
+  if (!hist || !hist.length) return 0;
+  let lo = 0, hi = hist.length - 1, ans = 0;
+  if (ts < hist[0][0]) return num(hist[0][1]);
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (hist[mid][0] <= ts) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+  return num(hist[ans][1]);
+}
+
+/** Max drawdown de la curva de PnL, relativo al capital en el pico (inmune a depósitos/retiros) */
+function maxDrawdown(pnlH, avH) {
+  if (!pnlH || pnlH.length < 2) return null;
+  let peak = -Infinity, peakAv = 0, dd = 0;
+  for (const [ts, v] of pnlH) {
+    const p = num(v);
+    if (p > peak) { peak = p; peakAv = avAt(avH, ts); }
+    if (peakAv > 0) dd = Math.max(dd, (peak - p) / peakAv);
+  }
+  return Math.min(dd, 1);
+}
+
+/** Detalle del peor drawdown: profundidad, fechas de pico/valle y cuándo recuperó (null = no recuperó) */
+function ddDetails(pnlH, avH) {
+  if (!pnlH || pnlH.length < 2) return null;
+  let peak = -Infinity, peakTs = null, peakAv = 0, best = { dd: 0 };
+  for (const [ts, v] of pnlH) {
+    const p = num(v);
+    if (p > peak) { peak = p; peakTs = ts; peakAv = avAt(avH, ts); }
+    const dd = peakAv > 0 ? (peak - p) / peakAv : 0;
+    if (dd > best.dd) best = { dd: Math.min(dd, 1), peakTs, troughTs: ts, peakVal: peak };
+  }
+  if (!best.troughTs) return { dd: 0, recDays: 0 };
+  const rec = pnlH.find(([ts, v]) => ts > best.troughTs && num(v) >= best.peakVal);
+  return { dd: best.dd, peakTs: best.peakTs, troughTs: best.troughTs, recTs: rec ? rec[0] : null,
+    recDays: rec ? (rec[0] - best.troughTs) / DAY : null, fallDays: (best.troughTs - best.peakTs) / DAY };
+}
+
+/** Riesgo de cola sobre trades cerrados: peor trade/día/semana y racha perdedora (en $ y % de la cuenta) */
+function tailRisk(closed, avH) {
+  if (!closed.length) return { worstTrade: null, worstTradePct: 0, worstDay: null, worstDayPct: 0, worstWeek: null, worstWeekPct: 0, maxLossStreak: 0, streakLoss: 0 };
+  let worst = null, worstPct = 0;
+  for (const t of closed) {
+    const a = avAt(avH, t.open), pct = a > 0 ? -t.net / a : 0;
+    if (!worst || t.net < worst.net) worst = { coin: t.coin, side: t.side, net: t.net, close: t.close, liq: t.liq, pct };
+    worstPct = Math.max(worstPct, pct);
+  }
+  const bucket = size => { const m = new Map(); for (const t of closed) { const k = Math.floor(t.close / size); m.set(k, (m.get(k) || 0) + t.net); }
+    let w = null; for (const [k, v] of m) if (!w || v < w.net) w = { ts: k * size, net: v }; if (w) { const a = avAt(avH, w.ts); w.pct = a > 0 ? -w.net / a : 0; } return w; };
+  const wd = bucket(DAY), ww = bucket(WEEK);
+  let streak = 0, maxStreak = 0, cur = 0, streakLoss = 0;
+  for (const t of [...closed].sort((a, b) => a.close - b.close)) {
+    if (t.net < 0) { streak++; cur += t.net; if (streak > maxStreak || (streak === maxStreak && cur < streakLoss)) { maxStreak = streak; streakLoss = cur; } }
+    else { streak = 0; cur = 0; }
+  }
+  return { worstTrade: worst, worstTradePct: Math.max(0, worstPct), worstDay: wd, worstDayPct: Math.max(0, wd.pct), worstWeek: ww, worstWeekPct: Math.max(0, ww.pct), maxLossStreak: maxStreak, streakLoss };
+}
+
+/** PnL y ROI aproximado de una ventana del endpoint portfolio */
+function windowFromPortfolio(p) {
+  if (!p || !p.pnlHistory || p.pnlHistory.length < 2) return null;
+  const pnl = num(p.pnlHistory.at(-1)[1]) - num(p.pnlHistory[0][1]);
+  const avs = (p.accountValueHistory || []).map(x => num(x[1])).filter(x => x > 0);
+  const base = mean(avs);
+  return { pnl, roi: base ? pnl / base : null };
+}
+
+/** Largo total de la unión de intervalos [a,b] */
+function unionLength(iv) {
+  const s = iv.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+  let tot = 0, ca = null, cb = null;
+  for (const [a, b] of s) { if (ca === null || a > cb) { if (ca !== null) tot += cb - ca; ca = a; cb = b; } else cb = Math.max(cb, b); }
+  if (ca !== null) tot += cb - ca;
+  return tot;
+}
+
+function downsample(arr, n = 150) {
+  if (!arr || arr.length <= n) return arr || [];
+  const step = (arr.length - 1) / (n - 1), out = [];
+  for (let i = 0; i < n; i++) out.push(arr[Math.round(i * step)]);
+  return out;
+}
+
+/** Une historiales de valor de cuenta (allTime + month + week + day) para más resolución reciente */
+function mergedAvHistory(portfolio) {
+  const P = Object.fromEntries(portfolio || []), m = new Map();
+  for (const k of ['allTime', 'month', 'week', 'day']) for (const [t, v] of ((P[k] || {}).accountValueHistory || [])) m.set(t, num(v));
+  return [...m.entries()].sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Simula copiar una billetera de forma PROPORCIONAL a su cuenta.
+ *   tu tamaño objetivo = su posición × (tu equity ÷ su valor de cuenta)
+ * Respeta aumentos, reducciones parciales, flips y cierres. Solo sigue posiciones
+ * que ve abrir desde cero (no se sube a trades ya abiertos).
+ * opts: { capital, start, feeRate, slip, minOrder, maxLev, ignore:Set, target, withdrawOnHit, ideal }
+ */
+function simulateCopy(fills, avH, opts) {
+  const EPS = 1e-12;
+  const o = Object.assign({ feeRate: 0.0005, slip: 0.0005, minOrder: 5, maxLev: 10, ignore: new Set(), target: null, withdrawOnHit: 0, killDD: null, ideal: false }, opts);
+  if (o.ideal) { o.feeRate = 0; o.slip = 0; o.minOrder = 0; o.maxLev = Infinity; o.killDD = null; }
+  const fs = fills.filter(f => /Long|Short/.test(f.dir || '') && f.time >= o.start).sort((a, b) => a.time - b.time || (a.tid || 0) - (b.tid || 0));
+  let cash = o.capital, fees = 0, copied = 0, skipped = 0, wiped = false, hitTs = null, withdrawn = 0;
+  let peakEq = o.capital, killed = false, killTs = null, killedCash = 0;
+  const pos = new Map(), last = new Map(), synced = new Set();
+  const curve = [[o.start, o.capital]];
+  const equity = () => { let e = cash; for (const [c, p] of pos) e += p.sz * ((last.get(c) || p.entry) - p.entry); return e; };
+  const ntlExcept = coin => { let n = 0; for (const [c, p] of pos) if (c !== coin) n += Math.abs(p.sz) * (last.get(c) || p.entry); return n; };
+  const trade = (coin, delta, px) => {
+    const p = pos.get(coin) || { sz: 0, entry: 0 };
+    if (p.sz === 0 || Math.sign(p.sz) === Math.sign(delta)) {
+      const n = p.sz + delta; p.entry = (p.entry * Math.abs(p.sz) + px * Math.abs(delta)) / Math.abs(n); p.sz = n;
+    } else {
+      const c = Math.min(Math.abs(delta), Math.abs(p.sz));
+      cash += c * (px - p.entry) * Math.sign(p.sz);
+      p.sz += Math.sign(delta) * c;
+      const rem = Math.abs(delta) - c;
+      if (Math.abs(p.sz) < EPS) { p.sz = 0; p.entry = 0; }
+      if (rem > EPS) { p.sz = Math.sign(delta) * rem; p.entry = px; }
+    }
+    if (p.sz === 0) pos.delete(coin); else pos.set(coin, p);
+    const fee = Math.abs(delta) * px * o.feeRate; cash -= fee; fees += fee; copied++;
+  };
+  for (const f of fs) {
+    const coin = f.coin, px = num(f.px), st = num(f.startPosition);
+    const theirEnd = st + (f.side === 'B' ? num(f.sz) : -num(f.sz));
+    last.set(coin, px);
+    if (o.ignore.has(coin.toUpperCase())) continue;
+    if (!synced.has(coin)) { if (Math.abs(st) > 1e-9) continue; synced.add(coin); }
+    const eq = equity();
+    if (eq <= 0) { wiped = true; break; }
+    const theirAV = avAt(avH, f.time);
+    if (theirAV <= 0) continue;
+    const mine = (pos.get(coin) || { sz: 0 }).sz;
+    const closing = Math.abs(theirEnd) < 1e-9;
+    let target = closing ? 0 : theirEnd * eq / theirAV;
+    const room = Math.max(0, o.maxLev * eq - ntlExcept(coin));                 // tope de apalancamiento total
+    if (Math.abs(target) * px > room && Math.abs(target) > Math.abs(mine)) target = Math.sign(target) * room / px;
+    const delta = target - mine;
+    if (Math.abs(delta) < EPS) continue;
+    if (!closing && Math.abs(delta) * px < o.minOrder) { skipped++; continue; } // por debajo de la orden mínima
+    trade(coin, delta, px * (1 + Math.sign(delta) * o.slip));
+    const e = equity();
+    curve.push([f.time, e]);
+    if (o.target != null && hitTs == null && e - o.capital >= o.target) {
+      hitTs = f.time;
+      if (o.withdrawOnHit > 0) { cash -= o.withdrawOnHit; withdrawn += o.withdrawOnHit; curve.push([f.time, equity()]); }
+      peakEq = equity();
+    }
+    // Stop de copia: si tu equity cae más de killDD desde su máximo, cierra todo y deja de copiar
+    const eNow = equity(); peakEq = Math.max(peakEq, eNow);
+    if (o.killDD != null && eNow < peakEq * (1 - o.killDD)) {
+      for (const [c, p] of [...pos]) trade(c, -p.sz, (last.get(c) || p.entry) * (1 - Math.sign(p.sz) * o.slip));
+      killedCash = Math.max(0, equity()); withdrawn += killedCash; cash -= killedCash;
+      killed = true; killTs = f.time; curve.push([f.time, 0]); break;
+    }
+  }
+  const finalEq = wiped || killed ? 0 : equity();
+  let peak = -Infinity, dd = 0;
+  for (const [, e] of curve) { peak = Math.max(peak, e); if (peak > 0) dd = Math.max(dd, (peak - e) / peak); }
+  return { finalEq, pnl: finalEq + withdrawn - o.capital, roi: (finalEq + withdrawn - o.capital) / o.capital, dd, fees, copied, skipped,
+    skippedPct: (copied + skipped) ? skipped / (copied + skipped) : 0, hitTs, wiped, withdrawn, killed, killTs, killedCash, curve, openNow: [...pos.keys()] };
+}
+
+/** Equity en el instante ts según una curva escalonada */
+function curveAt(curve, ts) { let v = null; for (const [t, e] of curve) { if (t > ts) break; v = e; } return v; }
+
+/** Métricas completas de una billetera */
+function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now }) {
+  const P = Object.fromEntries(portfolio || []);
+  const pAll = P.perpAllTime || P.allTime, pM = P.perpMonth || P.month, pW = P.perpWeek || P.week, pD = P.perpDay || P.day;
+  const avH = (P.allTime || pAll || {}).accountValueHistory || [];
+
+  // Estado actual
+  const ms = (state && state.marginSummary) || {};
+  const av = num(ms.accountValue), ntl = num(ms.totalNtlPos);
+  const positions = ((state && state.assetPositions) || []).map(x => x.position).filter(Boolean).map(p => ({
+    coin: p.coin, side: num(p.szi) > 0 ? 'Long' : 'Short', szi: num(p.szi), entry: num(p.entryPx),
+    value: num(p.positionValue), upnl: num(p.unrealizedPnl), roe: num(p.returnOnEquity),
+    lev: num(p.leverage && p.leverage.value), levType: p.leverage && p.leverage.type,
+    liq: p.liquidationPx == null ? null : num(p.liquidationPx) }));
+
+  // Trades
+  const { closed, open } = buildTrades(fills || []);
+  const walletStart = avH.length ? avH[0][0] : start;
+  const winStart = Math.max(start, walletStart);
+  const days = Math.max(1, (now - winStart) / DAY);
+  const wins = closed.filter(t => t.net > 0), losses = closed.filter(t => t.net < 0);
+  const gW = sum(wins.map(t => t.net)), gL = -sum(losses.map(t => t.net));
+  const pf = gL > 0 ? gW / gL : (gW > 0 ? Infinity : null);
+  const wr = closed.length ? wins.length / closed.length : null;
+  const holds = closed.filter(t => !t.partial).map(t => (t.close - t.open) / 60000);
+  const levs = closed.concat(open).map(t => { const a = avAt(avH, t.open); return a > 0 ? t.maxNtl / a : null; })
+                     .filter(x => x != null && x > 0 && x < 200);
+  const tim = (now - winStart) > 0
+    ? unionLength(closed.map(t => [Math.max(t.open, winStart), t.close]).concat(open.map(t => [Math.max(t.open, winStart), now]))) / (now - winStart)
+    : 0;
+  const wk = new Map();
+  for (const t of closed) { const k = Math.floor((t.close - winStart) / WEEK); wk.set(k, (wk.get(k) || 0) + t.net); }
+  const weeksPos = wk.size ? [...wk.values()].filter(v => v > 0).length / wk.size : null;
+  const lastTs = (fills && fills.length) ? Math.max(...fills.map(f => f.time)) : null;
+
+  // Dirección y frecuencia de entradas (trades abiertos dentro de la ventana, incluye flips)
+  const entries = closed.concat(open).filter(t => !t.partial && t.open >= winStart);
+  const nLong = entries.filter(t => t.side === 'Long').length, nShort = entries.length - nLong;
+  const perDay = new Map();
+  for (const t of entries) { const d = Math.floor(t.open / DAY); perDay.set(d, (perDay.get(d) || 0) + 1); }
+  const dayCounts = [...perDay.values()];
+
+  // ROI / PnL por ventana: leaderboard si existe (más fiable), si no portfolio
+  const fp = { d: windowFromPortfolio(pD), w: windowFromPortfolio(pW), m: windowFromPortfolio(pM), a: windowFromPortfolio(pAll) };
+  const pick = (k, f) => lb ? lb[k][f] : (fp[k] ? fp[k][f] : null);
+
+  const m = {
+    addr, name: name || (lb && lb.name) || '', updated: now,
+    av: av || (lb ? lb.av : 0), curLev: av > 0 ? ntl / av : 0,
+    roiD: pick('d', 'roi'), roiW: pick('w', 'roi'), roiM: pick('m', 'roi'), roiA: pick('a', 'roi'),
+    pnlM: pick('m', 'pnl'), pnlA: pick('a', 'pnl'),
+    trades: closed.length, wr, pf, net90: sum(closed.map(t => t.net)),
+    avgWin: wins.length ? gW / wins.length : null, avgLoss: losses.length ? -gL / losses.length : null,
+    tpw: closed.length / (days / 7),
+    avgHold: mean(holds), medHold: median(holds), tim,
+    avgLev: levs.length ? mean(levs) : null, maxLev: levs.length ? Math.max(...levs) : null,
+    ddAll: maxDrawdown(pAll && pAll.pnlHistory, avH),
+    dd30: maxDrawdown(pM && pM.pnlHistory, pM && pM.accountValueHistory),
+    weeksPos, liqs: closed.filter(t => t.liq).length,
+    longPct: entries.length ? nLong / entries.length : null,                 // % de entradas en largo
+    minorSide: entries.length ? Math.min(nLong, nShort) / entries.length : null, // lado minoritario (0 = solo un lado)
+    entriesDay: dayCounts.length ? mean(dayCounts) : 0,                      // promedio por día operado
+    maxEntriesDay: dayCounts.length ? Math.max(...dayCounts) : 0,
+    p90EntriesDay: dayCounts.length ? [...dayCounts].sort((a, b) => a - b)[Math.floor(0.9 * (dayCounts.length - 1))] : 0,
+    lastTs, positions, nFills: (fills || []).length,
+    curve: downsample(pAll && pAll.pnlHistory ? pAll.pnlHistory.map(([t, v]) => [t, num(v)]) : []),
+    lastTrades: closed.slice(-25).reverse().map(t => ({ coin: t.coin, side: t.side, open: t.open, close: t.close, net: t.net, ntl: t.maxNtl, partial: t.partial, liq: t.liq })),
+  };
+  // Riesgo de cola: mayor pérdida, peor día/semana, rachas, recuperación del DD
+  Object.assign(m, tailRisk(closed, avH));
+  m.ddInfo = ddDetails(pAll && pAll.pnlHistory, avH);
+  m.payoff = m.avgWin != null && m.avgLoss ? m.avgWin / Math.abs(m.avgLoss) : null;
+  m.burned = (m.ddAll || 0) >= 0.6 || m.worstTradePct >= 0.5;   // quemó (o casi) la cuenta alguna vez
+  m.coins = topCoins(closed);
+  m.aggr = aggressiveness(m);
+  m.flags = flagsFor(m, now);
+  m.copy = copyScore(m);
+  return m;
+}
+
+function topCoins(closed) {
+  const c = new Map(); for (const t of closed) c.set(t.coin, (c.get(t.coin) || 0) + 1);
+  return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
+}
+
+/** Agresividad 0-100: apalancamiento, drawdown, frecuencia, exposición actual, tiempo expuesto */
+function aggressiveness(m) {
+  return Math.round(100 * (
+      0.35 * clamp01((m.avgLev || 0) / 25)
+    + 0.20 * clamp01((m.ddAll || 0) / 0.6)
+    + 0.15 * clamp01(Math.log10(1 + m.tpw) / Math.log10(301))
+    + 0.15 * clamp01(m.curLev / 20)
+    + 0.15 * clamp01(m.tim)));
+}
+
+function flagsFor(m, now) {
+  const f = [];
+  if ((m.medHold != null && m.medHold < 10) || m.tpw > 200) f.push('HFT');
+  if (m.trades < 15) f.push('Muestra chica');
+  if ((m.avgLev || 0) > 15) f.push('Lev alto');
+  if ((m.ddAll || 0) > 0.4) f.push('DD alto');
+  if (m.liqs > 0) f.push(`${m.liqs} liq`);
+  if (!m.lastTs || now - m.lastTs > 14 * DAY) f.push('Inactiva');
+  if (m.nFills >= CFG.MAX_FILL_PAGES * 2000) f.push('Fills truncados');
+  if (m.minorSide != null && m.minorSide < 0.1) f.push(m.longPct > 0.5 ? 'Solo largos' : 'Solo cortos');
+  if (m.entriesDay > 10) f.push('>10 entradas/día');
+  if (m.burned) f.push('🔥 Quemó cuenta');
+  else if (m.worstTradePct > 0.15) f.push('Pérdida grande');
+  if (m.ddInfo && m.ddInfo.dd > 0.2 && m.ddInfo.recTs == null) f.push('DD sin recuperar');
+  return f;
+}
+
+/** Score de copia 0-100: rentabilidad + edge + consistencia + riesgo + copiabilidad */
+function copyScore(m) {
+  const pf = m.pf === Infinity ? 3 : (m.pf || 0);
+  let s = 0.20 * clamp01((m.roiM || 0) / 0.3)
+        + 0.10 * clamp01(Math.log10(1 + Math.max(0, m.roiA || 0)))
+        + 0.20 * clamp01((pf - 1) / 1.5)
+        + 0.15 * (m.weeksPos || 0)
+        + 0.20 * (1 - clamp01((m.ddAll == null ? 0.3 : m.ddAll) / 0.4))
+        + 0.15 * clamp01(((m.medHold || 0) - 5) / 55);     // ≥1h de holding = totalmente copiable
+  if (m.trades < 15) s *= m.trades / 15;
+  if (m.aggr > 70) s *= 0.8;
+  if (m.flags.includes('Inactiva')) s *= 0.7;
+  if (m.flags.includes('HFT')) s *= 0.5;
+  if (m.burned) s *= 0.2;                                                    // buena pero quema cuenta → casi descartada
+  else s *= 1 - 0.5 * clamp01(((m.worstTradePct || 0) - 0.05) / 0.25);      // 5% → sin castigo, 30%+ → -50%
+  if (m.ddInfo && m.ddInfo.dd > 0.2 && m.ddInfo.recTs == null) s *= 0.85;
+  return Math.round(100 * s);
+}
+
+/* ---------------------------- formato ---------------------------- */
+const fmtUsd = v => { if (v == null || !Number.isFinite(v)) return '—'; const a = Math.abs(v), s = v < 0 ? '-' : '';
+  return a >= 1e9 ? `${s}$${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${s}$${(a / 1e6).toFixed(2)}M` : a >= 1e3 ? `${s}$${(a / 1e3).toFixed(1)}k` : `${s}$${a.toFixed(0)}`; };
+const fmtPct = v => (v == null || !Number.isFinite(v)) ? '—' : `${(v * 100).toFixed(1)}%`;
+const fmtX = v => (v == null || !Number.isFinite(v)) ? '—' : `${v.toFixed(v < 1 ? 2 : 1)}×`;
+const fmtDur = mins => mins == null ? '—' : mins < 60 ? `${mins.toFixed(0)}m` : mins < 1440 ? `${(mins / 60).toFixed(1)}h` : `${(mins / 1440).toFixed(1)}d`;
+const fmtPf = v => v == null ? '—' : v === Infinity ? '∞' : v.toFixed(2);
+const fmtDate = ts => ts ? new Date(ts).toLocaleString('es-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const short = a => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const cls = v => v == null ? '' : v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const scoreBg = s => `background:hsla(${Math.round(s * 1.2)},70%,45%,.25);color:hsl(${Math.round(s * 1.2)},80%,65%)`;
+const aggrBg = s => `background:hsla(${Math.round(120 - s * 1.2)},70%,45%,.25);color:hsl(${Math.round(120 - s * 1.2)},80%,65%)`;
+
+/* ---------------------------- API con rate limit ---------------------------- */
+const Limiter = {
+  log: [],
+  used() { const now = Date.now(); this.log = this.log.filter(e => now - e.t < 60000); return sum(this.log.map(e => e.w)); },
+  async take(w) {
+    for (;;) {
+      if (this.used() + w <= CFG.WEIGHT_PER_MIN) { this.log.push({ t: Date.now(), w }); return; }
+      const wait = 60000 - (Date.now() - this.log[0].t) + 100;
+      setStatus(`Límite de API: esperando ${Math.ceil(wait / 1000)}s…`);
+      await sleep(Math.min(wait, 3000));
+    }
+  },
+  charge(w) { if (w > 0) this.log.push({ t: Date.now(), w }); },
+};
+
+async function info(body, weight) {
+  await Limiter.take(weight);
+  for (let i = 0; i < 5; i++) {
+    const r = await fetch(CFG.API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.status === 429) { await sleep(2000 * 2 ** i); continue; }
+    if (!r.ok) throw new Error(`API ${r.status}`);
+    return r.json();
+  }
+  throw new Error('API saturada (429)');
+}
+
+async function getFills(addr, start) {
+  const out = []; let from = start;
+  for (let page = 0; page < CFG.MAX_FILL_PAGES; page++) {
+    const r = await info({ type: 'userFillsByTime', user: addr, startTime: from, aggregateByTime: true }, 20);
+    Limiter.charge(Math.ceil((r || []).length / 20));     // peso extra por ítems devueltos
+    if (!r || !r.length) break;
+    out.push(...r);
+    if (r.length < 2000) break;
+    from = Math.max(...r.map(f => f.time)) + 1;
+  }
+  return out;
+}
+
+async function analyzeWallet(addr) {
+  const now = Date.now(), start = now - CFG.FILL_DAYS * DAY;
+  const [state, portfolio] = await Promise.all([
+    info({ type: 'clearinghouseState', user: addr }, 2),
+    info({ type: 'portfolio', user: addr }, 20),
+  ]);
+  const fills = await getFills(addr, start);
+  S.raw.set(addr, { fills, avH: mergedAvHistory(portfolio), days: CFG.FILL_DAYS, ts: now });  // reutilizado por el simulador
+  return computeMetrics({ addr, name: S.watch[addr] || '', fills, portfolio, state, lb: S.lbIndex.get(addr), start, now });
+}
+
+/** Lista inicial de billeteras de Dani (se fusiona con la guardada, sin pisar apodos) */
+const PRESET_WATCH = {"0x939f95036d2e7b6d7419ec072bf9d967352204d2": "n1", "0x8af700ba841f30e0a3fcb0ee4c4a9d223e1efa05": "n2", "0x77375a8c9d13bf79afb2a87f1b0ac1dfd5f5bf66": "n3", "0xfc667adba8d4837586078f4fdcdc29804337ca06": "n4", "0x8e096995c3e4a3f0bc5b3ea1cba94de2aa4d70c9": "n5", "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00": "n6", "0x856c35038594767646266bc7fd68dc26480e910d": "n7", "0xe86b057f5eb764c9738d6b0d38170befd0723664": "n8", "0xbf732ea04197942783e34730ed6e0f6099575d58": "n9", "0x469e9a7f624b04c24f0e64edf8d8a277e6bf58a5": "n10", "0xdbd1bac81ad581c7198c9d155ca468f32a0c29dd": "n11", "0x5559da6ec434c5723d0ce9c4da7f29e3f8a3d43b": "n12", "0x5f94a51948d2376ad34a6fadfa2544e651b74b96": "n13", "0x24555b39d91e53c4c7811219ece75b15fd9eabc3": "n14", "0xbe74e8e6fa8f47cf01d9a6c9f6cf4458720ffc33": "n15", "0xbb97757984fa4408c13bd3b4a9189f520bf317d3": "n16", "0x91219d5fc4540bce994036217ade77945da5d6f6": "n17", "0xe02e420ec55b4e03924d77c7b342c012541ba2d3": "n18", "0x349bd094209d50280dfaca12779576c748395c15": "n19", "0x5cbdb794b3b36df58a7ce6c1a552f117f061103b": "n20", "0x885989fd94d30c150e6eaf897090509bce4f6aa8": "n21", "0xe912cac1a6641004a8803687ee7699227fdb0550": "n22", "0x441c8cbe1aa06beea4c84cfff5e12753f37822fb": "n23", "0xe113311f35a53b196c0ab3ed31ad0bf937cc5c07": "n24", "0x3e41a8fa0032d635f02201053f1a5aa2a6967c81": "n25", "0x2312171890250347dbf1b082bdf7950504909e92": "n26", "0x3927af597c09774f91ef84bf765ded4109e9f8ea": "n28", "0xf53cab0c6f25f48f985d1e2c40e03fc7c1963364": "n29", "0x352deb23bebae8b4c57d0ae341d9c1951fd8425a": "n30", "0x15baf1cefcced43e971da85b7b4de5a0391f7b29": "n31", "0x40e494cdd7f6ee95449e06a74b767fb93c3623c5": "n32", "0x29754d7a9f9f344327158e2d01508efa415bd558": "n33", "0xc0b2a1ce425d0cd8bc321c445fa6ae0eaed2e688": "n34", "0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7": "n35", "0xe030fec019fe9cbab01eab3106eb9ce32851e64d": "n36", "0xf736381cd7d51e8584eb22571a8d1e267f1bec5a": "n37", "0x0c87080e84ad8e91f54c4af0aa921e1f183d601b": "n38", "0xb847748c6119d1d91a6613d549d041242cbd1c24": "n39", "0xa7fd61557cd0a61073566766839d5f851a8e92ef": "n40", "0x88812b4f3a593bcb6faee35fea189af677d6d00d": "n41", "0xed7c45acfd7d2d3b21f3039d86e1da540596d23a": "n42", "0x977da36660efc8131eb534bfacea35de15349337": "n43", "0x7daf36b02586e7a30118e1648b36346194490b64": "n44", "0x5b9f7f6c2cbe7425b9c03fe5254ced9fae05b50c": "n45", "0x3fa8ed10f4aa3ac5b2c43d8bd59d8830f88d974c": "n46", "0x58081c6c806c629de1c8a05229771d791964751a": "n47", "0x15a105b6eca967a438a6930f6859b7e5dbc134a7": "n48", "0xaecfe4eff84a1cd9a24accc1914ac537af7f6e1b": "n49", "0xbe3f79ae0ab3294aaa3230c1155e912c05b6a55b": "n50", "0x7b8529dfd37b7483faae2bfd3051a52b32e9a23b": "n51", "0xee9c7b724e4227687dffe79e2d6d5241890b96ea": "n52", "0xba939edf38c0ae0cc689c98b492e0535f43e4550": "n53", "0x1c287f73c566b3382463a58e5e44f1336ed013c0": "g1", "0x95465e180697879cdd127b210c4830a16e3f96e4": "g2", "0x020bbb92f73b51042572beb2cce4643c532320e9": "g3", "0x35152346a603ec69b96c6e3d8478b8d80d51aafa": "g4", "0x08c788afdacf6cf81180d2bbbe42a7434d0c7a92": "g5", "0x8fec806c9e94ff7ab2af3d7e4875c2381413f98e": "g6", "0x38032f326436fdb9c7a9b359e90010f86b8ab482": "g7", "0xa8c3898dd0a4184eb2d83f6a3dc287607a1258e2": "g8", "0x0bd27fac898a59680b9dc92bb7378df610825e8d": "t1", "0xc19286cdfd63461228d3a0e0328dfc1e210b0da4": "t2", "0x2a724be1b63caec1c3ef95834fdd443c3347ee1d": "t3", "0x6ea88044114e9f23b44bc05bf0eb82fbec2226fd": "t4"};
+
+/* ---------------------------- estado + storage ---------------------------- */
+const S = {
+  lb: [], lbIndex: new Map(), lbView: [], sel: new Set(),
+  metrics: new Map(), watch: {}, running: false, cancel: false,
+  raw: new Map(), sims: new Map(), sortSim: { key: 'roi', asc: false },
+  sortLb: { key: null, asc: false }, sortRk: { key: 'copy', asc: false },
+};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* cuota llena o storage bloqueado */ } },
+};
+const saveMetrics = () => store.set('hlws_metrics', [...S.metrics.values()]);
+const saveWatch = () => store.set('hlws_watch', S.watch);
+
+/* ---------------------------- UI ---------------------------- */
+const $ = id => document.getElementById(id);
+const setStatus = t => { const el = typeof document !== 'undefined' && $('status'); if (el) el.textContent = t; };
+
+function readFilters() {
+  const v = id => { const x = $(id).value.trim(); return x === '' ? null : parseFloat(x); };
+  const pct = id => { const x = v(id); return x == null ? null : x / 100; };
+  return { minAV: v('f_minAV'), minPnlAll: v('f_minPnlAll'), minRoiAll: pct('f_minRoiAll'), minRoiM: pct('f_minRoiM'),
+    maxRoiM: pct('f_maxRoiM'), minRoiW: pct('f_minRoiW'), minRoiD: pct('f_minRoiD'), maxVlmRatio: v('f_maxVlmRatio'),
+    active: $('f_active').checked, sort: $('f_sort').value };
+}
+function applyPreset(k) {
+  const p = PRESETS[k];
+  for (const f of ['minAV', 'minPnlAll', 'minRoiAll', 'minRoiM', 'maxRoiM', 'minRoiW', 'minRoiD', 'maxVlmRatio']) $('f_' + f).value = p[f];
+  $('f_active').checked = p.active; $('f_sort').value = p.sort;
+}
+
+/* Tabla genérica ordenable */
+function renderTable(el, cols, rows, sortState, onSort, rowAttrs) {
+  const head = '<tr>' + cols.map(c => `<th data-k="${c.k}" class="${c.l ? 'l ' : ''}${c.sticky ? 'sticky ' : ''}${sortState.key === c.k ? 's' + (sortState.asc ? ' asc' : '') : ''}" title="${esc(c.tip || '')}">${c.h}</th>`).join('') + '</tr>';
+  const body = rows.map((r, i) => `<tr ${rowAttrs(r)}>` + cols.map(c => `<td class="${c.l ? 'l ' : ''}${c.sticky ? 'sticky ' : ''}${c.cls ? c.cls(r) : ''}">${c.f(r, i)}</td>`).join('') + '</tr>').join('');
+  el.innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
+  el.querySelectorAll('th').forEach(th => th.onclick = () => {
+    const c = cols.find(c => c.k === th.dataset.k); if (!c || !c.v) return;
+    if (sortState.key === c.k) sortState.asc = !sortState.asc; else { sortState.key = c.k; sortState.asc = false; }
+    onSort();
+  });
+}
+function sortRows(rows, cols, st) {
+  const c = cols.find(c => c.k === st.key); if (!c || !c.v) return rows;
+  const val = r => { const x = c.v(r); return x == null || Number.isNaN(x) ? -Infinity : x; };
+  return [...rows].sort((a, b) => st.asc ? val(a) - val(b) : val(b) - val(a));
+}
+
+const walletCell = (addr, name) => `<span class="addr">${short(addr)}</span>${name ? ` <span class="mut">${esc(name)}</span>` : ''}`;
+
+const LB_COLS = [
+  { k: 'sel', h: '✓', f: r => `<input type="checkbox" ${S.sel.has(r.addr) ? 'checked' : ''}>`, l: 1 },
+  { k: 'addr', h: 'Billetera', f: r => (S.watch[r.addr] !== undefined ? '★ ' : '') + walletCell(r.addr, r.name) + (S.metrics.has(r.addr) ? ' <span class="tag" style="color:var(--acc)">analizada</span>' : ''), l: 1, sticky: 1 },
+  { k: 'pre', h: 'Pre-score', v: r => r.pre, f: r => `<span class="score" style="${scoreBg(r.pre)}">${r.pre}</span>`, tip: 'Score preliminar con datos del leaderboard' },
+  { k: 'av', h: 'Capital', v: r => r.av, f: r => fmtUsd(r.av) },
+  { k: 'roiD', h: 'ROI 24h', v: r => r.d.roi, f: r => fmtPct(r.d.roi), cls: r => cls(r.d.roi) },
+  { k: 'roiW', h: 'ROI 7d', v: r => r.w.roi, f: r => fmtPct(r.w.roi), cls: r => cls(r.w.roi) },
+  { k: 'roiM', h: 'ROI 30d', v: r => r.m.roi, f: r => fmtPct(r.m.roi), cls: r => cls(r.m.roi) },
+  { k: 'roiA', h: 'ROI total', v: r => r.a.roi, f: r => fmtPct(r.a.roi), cls: r => cls(r.a.roi) },
+  { k: 'pnlM', h: 'PnL 30d', v: r => r.m.pnl, f: r => fmtUsd(r.m.pnl), cls: r => cls(r.m.pnl) },
+  { k: 'pnlA', h: 'PnL total', v: r => r.a.pnl, f: r => fmtUsd(r.a.pnl), cls: r => cls(r.a.pnl) },
+  { k: 'vr', h: 'Vol30d/Cap', v: r => r.vlmRatio, f: r => Number.isFinite(r.vlmRatio) ? fmtX(r.vlmRatio) : '—', tip: 'Rotación del capital. Muy alto = HFT / market maker' },
+];
+
+const RK_COLS = [
+  { k: 'star', h: '★', f: r => `<span class="star ${S.watch[r.addr] !== undefined ? 'on' : ''}" data-star="${r.addr}">★</span>`, l: 1 },
+  { k: 'addr', h: 'Billetera', f: r => walletCell(r.addr, S.watch[r.addr] || r.name), l: 1, sticky: 1 },
+  { k: 'copy', h: 'Score copia', v: r => r.copy, f: r => `<span class="score" style="${scoreBg(r.copy)}">${r.copy}</span>`, tip: 'Rentabilidad + edge + consistencia + riesgo + copiabilidad' },
+  { k: 'aggr', h: 'Agresividad', v: r => r.aggr, f: r => `<span class="score" style="${aggrBg(r.aggr)}">${r.aggr}</span>`, tip: 'Lev, drawdown, frecuencia, exposición' },
+  { k: 'av', h: 'Capital', v: r => r.av, f: r => fmtUsd(r.av) },
+  { k: 'roiW', h: 'ROI 7d', v: r => r.roiW, f: r => fmtPct(r.roiW), cls: r => cls(r.roiW) },
+  { k: 'roiM', h: 'ROI 30d', v: r => r.roiM, f: r => fmtPct(r.roiM), cls: r => cls(r.roiM) },
+  { k: 'roiA', h: 'ROI total', v: r => r.roiA, f: r => fmtPct(r.roiA), cls: r => cls(r.roiA) },
+  { k: 'pnlM', h: 'PnL 30d', v: r => r.pnlM, f: r => fmtUsd(r.pnlM), cls: r => cls(r.pnlM) },
+  { k: 'wr', h: 'Win rate', v: r => r.wr, f: r => fmtPct(r.wr) },
+  { k: 'pf', h: 'Profit F.', v: r => r.pf === Infinity ? 99 : r.pf, f: r => fmtPf(r.pf), cls: r => r.pf == null ? '' : r.pf >= 1 ? 'pos' : 'neg', tip: 'Ganancia bruta ÷ pérdida bruta' },
+  { k: 'trades', h: 'Trades 90d', v: r => r.trades, f: r => r.trades },
+  { k: 'tpw', h: 'Ops/sem', v: r => r.tpw, f: r => r.tpw.toFixed(1) },
+  { k: 'longPct', h: 'Long/Short', v: r => r.minorSide, f: r => r.longPct == null ? '—' : `${Math.round(r.longPct * 100)}/${100 - Math.round(r.longPct * 100)}`, tip: '% de entradas en largo / corto. Ordena por balance' },
+  { k: 'entriesDay', h: 'Entr/día', v: r => r.entriesDay, f: r => `${(r.entriesDay || 0).toFixed(1)} <span class="mut">(máx ${r.maxEntriesDay || 0})</span>`, cls: r => (r.entriesDay || 0) > 10 ? 'neg' : '', tip: 'Promedio de entradas por día operado (día máximo)' },
+  { k: 'medHold', h: 'Hold med.', v: r => r.medHold, f: r => fmtDur(r.medHold) },
+  { k: 'tim', h: '% en mercado', v: r => r.tim, f: r => fmtPct(r.tim) },
+  { k: 'avgLev', h: 'Lev prom', v: r => r.avgLev, f: r => fmtX(r.avgLev) },
+  { k: 'curLev', h: 'Lev actual', v: r => r.curLev, f: r => fmtX(r.curLev) },
+  { k: 'ddAll', h: 'Max DD', v: r => r.ddAll, f: r => fmtPct(r.ddAll), cls: r => (r.ddAll || 0) > 0.4 ? 'neg' : '' },
+  { k: 'worst', h: 'Peor trade', v: r => -(r.worstTradePct || 0), f: r => r.worstTrade ? `${fmtUsd(r.worstTrade.net)} <span class="mut">(${fmtPct(-r.worstTradePct)})</span>` : '—', cls: r => (r.worstTradePct || 0) > 0.15 ? 'neg' : '', tip: 'Mayor pérdida en un solo trade ($ y % de su cuenta)' },
+  { k: 'worstWeek', h: 'Peor semana', v: r => -(r.worstWeekPct || 0), f: r => fmtPct(-(r.worstWeekPct || 0)), cls: r => (r.worstWeekPct || 0) > 0.2 ? 'neg' : '' },
+  { k: 'streak', h: 'Racha perd.', v: r => -(r.maxLossStreak || 0), f: r => r.maxLossStreak ?? '—', tip: 'Máximo de trades perdedores seguidos' },
+  { k: 'payoff', h: 'Payoff', v: r => r.payoff, f: r => r.payoff == null ? '—' : r.payoff.toFixed(2), tip: 'Ganancia promedio ÷ pérdida promedio. <1 con WR alto = deja correr pérdidas' },
+  { k: 'weeksPos', h: 'Sem. +', v: r => r.weeksPos, f: r => fmtPct(r.weeksPos), tip: '% de semanas con PnL positivo (90d)' },
+  { k: 'coins', h: 'Monedas', f: r => (r.coins || []).join(', '), l: 1 },
+  { k: 'flags', h: 'Alertas', f: r => (r.flags || []).map(x => `<span class="tag">${esc(x)}</span>`).join(''), l: 1 },
+];
+
+function renderLb() {
+  const rows = sortRows(S.lbView, LB_COLS, S.sortLb).slice(0, CFG.LB_MAX_ROWS);
+  renderTable($('lbTable'), LB_COLS, rows, S.sortLb, renderLb, r => `class="clk" data-addr="${r.addr}"`);
+  $('lbTable').querySelectorAll('tbody tr').forEach(tr => tr.onclick = () => {
+    const a = tr.dataset.addr; S.sel.has(a) ? S.sel.delete(a) : S.sel.add(a);
+    tr.querySelector('input').checked = S.sel.has(a); updateLbButtons();
+  });
+  updateLbButtons();
+}
+function updateLbButtons() {
+  $('btnAnalyzeTop').disabled = S.running || !S.lbView.length;
+  $('btnAnalyzeSel').disabled = S.running || !S.sel.size;
+  $('btnWatchSel').disabled = !S.sel.size;
+  $('btnAnalyzeSel').textContent = `Analizar seleccionadas (${S.sel.size})`;
+}
+
+function rankingRows() {
+  const v = id => { const x = $(id).value.trim(); return x === '' ? null : parseFloat(x); };
+  const onlyW = $('r_onlyWatch').checked, hideHft = $('r_hideHft').checked;
+  const minScore = v('r_minScore'), minTr = v('r_minTrades'), minWr = v('r_minWr'), maxDd = v('r_maxDd'),
+        maxLev = v('r_maxLev'), minHold = v('r_minHold'), maxAggr = v('r_maxAggr'),
+        hideBurned = $('r_hideBurned').checked, maxWorst = v('r_maxWorst'),
+        minMinor = v('r_minMinor'), maxEntries = v('r_maxEntries'), eMode = $('r_entriesMode').value;
+  return [...S.metrics.values()].filter(m => {
+    const inW = S.watch[m.addr] !== undefined;
+    if (onlyW && !inW) return false;
+    if (hideHft && m.flags.includes('HFT')) return false;
+    if (minScore != null && m.copy < minScore) return false;
+    if (minTr != null && m.trades < minTr) return false;
+    if (minWr != null && (m.wr == null || m.wr * 100 < minWr)) return false;
+    if (maxDd != null && (m.ddAll || 0) * 100 > maxDd) return false;
+    if (maxLev != null && (m.avgLev || 0) > maxLev) return false;
+    if (minHold != null && (m.medHold || 0) < minHold) return false;
+    if (maxAggr != null && m.aggr > maxAggr) return false;
+    if (hideBurned && m.burned) return false;
+    if (maxWorst != null && (m.worstTradePct || 0) * 100 > maxWorst) return false;
+    if (minMinor != null && (m.minorSide == null || m.minorSide * 100 < minMinor)) return false;
+    if (maxEntries != null && (m[eMode] || 0) > maxEntries) return false;
+    return true;
+  });
+}
+function renderRk() {
+  const rows = sortRows(rankingRows(), RK_COLS, S.sortRk);
+  renderTable($('rkTable'), RK_COLS, rows, S.sortRk, renderRk, r => `class="clk" data-addr="${r.addr}"`);
+  $('rkTable').querySelectorAll('tbody tr').forEach(tr => tr.onclick = e => {
+    const star = e.target.closest('[data-star]');
+    if (star) { toggleWatch(star.dataset.star); return; }
+    openDetail(tr.dataset.addr);
+  });
+  if (!rows.length) $('rkTable').innerHTML = `<tbody><tr><td class="l mut" style="padding:16px">Todavía no hay billeteras analizadas que pasen los filtros. Andá a "Descubrir" y tocá "Analizar top N", o pegá direcciones arriba.</td></tr></tbody>`;
+}
+function toggleWatch(a) {
+  if (S.watch[a] !== undefined) delete S.watch[a]; else S.watch[a] = '';
+  saveWatch(); renderRk();
+}
+
+/* Gráfico SVG simple de PnL acumulado */
+function lineChart(pts, w = 680, h = 180, zero = true) {
+  if (!pts || pts.length < 2) return '<div class="mut">Sin historial de PnL.</div>';
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = zero ? Math.min(0, ...ys) : Math.min(...ys), y1 = zero ? Math.max(0, ...ys) : Math.max(...ys);
+  const X = x => 4 + (w - 8) * (x - x0) / ((x1 - x0) || 1), Y = y => h - 4 - (h - 8) * (y - y0) / ((y1 - y0) || 1);
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+  const col = (zero ? ys.at(-1) >= 0 : ys.at(-1) >= ys[0]) ? 'var(--pos)' : 'var(--neg)';
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px">
+    <line x1="0" x2="${w}" y1="${Y(zero ? 0 : ys[0])}" y2="${Y(zero ? 0 : ys[0])}" stroke="var(--line)" stroke-dasharray="4 4"/>
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="2"/>
+    <text x="8" y="16" fill="var(--mut)" font-size="11">${fmtUsd(y1)}</text>
+    <text x="8" y="${h - 8}" fill="var(--mut)" font-size="11">${fmtUsd(y0)}</text>
+    <text x="${w - 8}" y="${h - 8}" fill="var(--mut)" font-size="11" text-anchor="end">${new Date(x0).toLocaleDateString('es-CA')} → ${new Date(x1).toLocaleDateString('es-CA')}</text>
+  </svg>`;
+}
+
+function openDetail(addr) {
+  const m = S.metrics.get(addr); if (!m) return;
+  const k = (label, val, c = '') => `<div class="kpi"><div class="k">${label}</div><div class="v ${c}">${val}</div></div>`;
+  const pos = m.positions.length
+    ? `<div class="tw"><table><thead><tr><th class="l">Moneda</th><th>Lado</th><th>Tamaño $</th><th>Entrada</th><th>Lev</th><th>uPnL</th><th>ROE</th><th>Liq</th></tr></thead><tbody>${
+        m.positions.map(p => `<tr><td class="l">${esc(p.coin)}</td><td class="${p.side === 'Long' ? 'pos' : 'neg'}">${p.side}</td><td>${fmtUsd(p.value)}</td><td>${p.entry}</td><td>${p.lev}× ${p.levType === 'isolated' ? 'iso' : 'cross'}</td><td class="${cls(p.upnl)}">${fmtUsd(p.upnl)}</td><td class="${cls(p.roe)}">${fmtPct(p.roe)}</td><td>${p.liq ?? '—'}</td></tr>`).join('')
+      }</tbody></table></div>`
+    : '<div class="mut">Sin posiciones abiertas.</div>';
+  const tr = m.lastTrades.length
+    ? `<div class="tw"><table><thead><tr><th class="l">Moneda</th><th>Lado</th><th>Apertura</th><th>Cierre</th><th>Hold</th><th>Tamaño máx</th><th>PnL neto</th></tr></thead><tbody>${
+        m.lastTrades.map(t => `<tr><td class="l">${esc(t.coin)}${t.liq ? ' <span class="tag">liq</span>' : ''}</td><td class="${t.side === 'Long' ? 'pos' : 'neg'}">${t.side}</td><td>${t.partial ? '<span class="mut">antes</span>' : fmtDate(t.open)}</td><td>${fmtDate(t.close)}</td><td>${t.partial ? '—' : fmtDur((t.close - t.open) / 60000)}</td><td>${fmtUsd(t.ntl)}</td><td class="${cls(t.net)}">${fmtUsd(t.net)}</td></tr>`).join('')
+      }</tbody></table></div>`
+    : '<div class="mut">Sin trades cerrados en 90 días.</div>';
+  $('drawerIn').innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <div><div class="addr" style="font-size:13px;word-break:break-all">${addr}</div><div class="mut">${esc(S.watch[addr] || m.name || '')}</div></div>
+      <button class="b" id="dClose">Cerrar ✕</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="b" id="dCopy">Copiar dirección</button>
+      <button class="b" id="dStar">${S.watch[addr] !== undefined ? '★ Quitar de mi lista' : '☆ Agregar a mi lista'}</button>
+      <button class="b" id="dRefresh">Re-analizar</button>
+      <a class="b" href="https://app.hyperliquid.xyz/explorer/address/${addr}" target="_blank" rel="noopener">Explorer HL ↗</a>
+      <a class="b" href="https://hypurrscan.io/address/${addr}" target="_blank" rel="noopener">Hypurrscan ↗</a>
+    </div>
+    <div class="kpis">
+      ${k('Score copia', `<span class="score" style="${scoreBg(m.copy)}">${m.copy}</span>`)}
+      ${k('Agresividad', `<span class="score" style="${aggrBg(m.aggr)}">${m.aggr}</span>`)}
+      ${k('Capital', fmtUsd(m.av))}
+      ${k('ROI 30d', fmtPct(m.roiM), cls(m.roiM))}
+      ${k('ROI total', fmtPct(m.roiA), cls(m.roiA))}
+      ${k('PnL neto 90d (fills)', fmtUsd(m.net90), cls(m.net90))}
+      ${k('Win rate', fmtPct(m.wr))}
+      ${k('Profit factor', fmtPf(m.pf))}
+      ${k('Ganancia prom.', fmtUsd(m.avgWin), 'pos')}
+      ${k('Pérdida prom.', fmtUsd(m.avgLoss), 'neg')}
+      ${k('Trades 90d', m.trades)}
+      ${k('Ops / semana', m.tpw.toFixed(1))}
+      ${k('Hold medio / mediano', `${fmtDur(m.avgHold)} / ${fmtDur(m.medHold)}`)}
+      ${k('% tiempo en mercado', fmtPct(m.tim))}
+      ${k('Lev prom / máx', `${fmtX(m.avgLev)} / ${fmtX(m.maxLev)}`)}
+      ${k('Lev actual', fmtX(m.curLev))}
+      ${k('Max DD total / 30d', `${fmtPct(m.ddAll)} / ${fmtPct(m.dd30)}`)}
+      ${k('Semanas en verde', fmtPct(m.weeksPos))}
+      ${k('Long / Short (entradas)', m.longPct == null ? '—' : `${Math.round(m.longPct * 100)}% / ${100 - Math.round(m.longPct * 100)}%`)}
+      ${k('Entradas/día prom · p90 · máx', `${(m.entriesDay || 0).toFixed(1)} · ${m.p90EntriesDay || 0} · ${m.maxEntriesDay || 0}`, (m.entriesDay || 0) > 10 ? 'neg' : '')}
+    </div>
+    ${m.flags.length ? `<div style="margin-bottom:10px">${m.flags.map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>` : ''}
+    <h3 style="font-size:14px">⚠️ Mayor pérdida y riesgo de cola</h3>
+    ${m.burned ? '<div class="card" style="border-color:var(--neg)"><b class="neg">🔥 Esta billetera quemó (o casi) la cuenta: drawdown ≥ 60% o un trade que perdió ≥ 50% del capital. Aunque hoy gane, no conviene copiarla.</b></div>' : ''}
+    <div class="kpis">
+      ${k('Peor trade', m.worstTrade ? `${fmtUsd(m.worstTrade.net)}` : '—', m.worstTrade ? cls(m.worstTrade.net) : '')}
+      ${k('Peor trade (% cuenta)', fmtPct(m.worstTradePct), (m.worstTradePct || 0) > 0.15 ? 'neg' : '')}
+      ${k('Detalle peor trade', m.worstTrade ? `${esc(m.worstTrade.coin)} ${m.worstTrade.side}${m.worstTrade.liq ? ' · LIQ' : ''}<div class="mut" style="font-size:11px">${fmtDate(m.worstTrade.close)}</div>` : '—')}
+      ${k('Peor día', m.worstDay ? `${fmtUsd(m.worstDay.net)} <span class="mut" style="font-size:12px">(${fmtPct(-m.worstDayPct)})</span>` : '—', m.worstDay ? cls(m.worstDay.net) : '')}
+      ${k('Peor semana', m.worstWeek ? `${fmtUsd(m.worstWeek.net)} <span class="mut" style="font-size:12px">(${fmtPct(-m.worstWeekPct)})</span>` : '—', m.worstWeek ? cls(m.worstWeek.net) : '')}
+      ${k('Racha perdedora máx', `${m.maxLossStreak || 0} trades <span class="mut" style="font-size:12px">(${fmtUsd(m.streakLoss)})</span>`)}
+      ${k('Payoff (gan./pérd. prom.)', m.payoff == null ? '—' : m.payoff.toFixed(2), m.payoff != null && m.payoff < 1 ? 'warn' : '')}
+      ${k('Max DD histórico', fmtPct(m.ddAll), (m.ddAll || 0) > 0.4 ? 'neg' : '')}
+      ${k('Caída del DD', m.ddInfo && m.ddInfo.fallDays != null ? `${m.ddInfo.fallDays.toFixed(0)} días<div class="mut" style="font-size:11px">${fmtDate(m.ddInfo.peakTs)} → ${fmtDate(m.ddInfo.troughTs)}</div>` : '—')}
+      ${k('Recuperación del DD', !m.ddInfo ? '—' : m.ddInfo.recTs == null ? (m.ddInfo.dd > 0 ? '<span class="neg">No recuperó</span>' : '—') : `${m.ddInfo.recDays.toFixed(0)} días`)}
+      ${k('Liquidaciones (90d)', m.liqs, m.liqs ? 'neg' : '')}
+    </div>
+    <h3 style="font-size:14px">PnL acumulado (perps, histórico)</h3>${lineChart(m.curve)}
+    <h3 style="font-size:14px">Posiciones abiertas</h3>${pos}
+    <h3 style="font-size:14px">Últimos trades cerrados</h3>${tr}
+    <div class="mut" style="font-size:11px;margin-top:10px">Actualizado: ${fmtDate(m.updated)} · ${m.nFills} fills analizados</div>`;
+  $('drawer').classList.add('on');
+  $('dClose').onclick = () => $('drawer').classList.remove('on');
+  $('dCopy').onclick = () => copyText(addr);
+  $('dStar').onclick = () => { toggleWatch(addr); openDetail(addr); };
+  $('dRefresh').onclick = () => runQueue([addr], true).then(() => openDetail(addr));
+}
+
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); setStatus('Copiado ✔'); } catch { setStatus('No se pudo copiar'); }
+}
+
+/* Cola de análisis con concurrencia limitada */
+async function runQueue(addrs, force = false) {
+  if (S.running) return;
+  const ttl = CFG.CACHE_TTL_H * 3600e3;
+  const todo = [...new Set(addrs.map(a => a.toLowerCase()))].filter(a => force || !S.metrics.has(a) || Date.now() - S.metrics.get(a).updated > ttl);
+  if (!todo.length) { setStatus('Todo ya estaba analizado (caché < 6h)'); renderRk(); return; }
+  S.running = true; S.cancel = false; $('btnCancel').disabled = false; updateLbButtons();
+  let done = 0, errors = 0; const idx = { i: 0 };
+  const tick = () => { $('prog').style.width = `${100 * done / todo.length}%`; $('progTxt').textContent = `Analizando ${done}/${todo.length}${errors ? ` · ${errors} con error` : ''}…`; };
+  tick();
+  const worker = async () => {
+    while (!S.cancel && idx.i < todo.length) {
+      const a = todo[idx.i++];
+      try { const m = await analyzeWallet(a); S.metrics.set(a, m); }
+      catch (e) { errors++; console.warn(a, e); }
+      done++; tick();
+      if (done % 3 === 0) { saveMetrics(); renderRk(); }
+    }
+  };
+  await Promise.all(Array.from({ length: CFG.CONCURRENCY }, worker));
+  saveMetrics(); renderRk(); renderLb();
+  S.running = false; $('btnCancel').disabled = true; updateLbButtons();
+  const msg = `${S.cancel ? 'Cancelado' : 'Listo'}: ${done - errors} analizadas${errors ? `, ${errors} con error (ver consola)` : ''}`;
+  $('progTxt').textContent = msg; setStatus(msg);
+}
+
+/* ---------------------------- Simulador (UI) ---------------------------- */
+async function getRaw(addr, days) {
+  const c = S.raw.get(addr);
+  if (c && c.days >= days && Date.now() - c.ts < CFG.CACHE_TTL_H * 3600e3) return c;
+  const now = Date.now();
+  const portfolio = await info({ type: 'portfolio', user: addr }, 20);
+  const fills = await getFills(addr, now - days * DAY);
+  const r = { fills, avH: mergedAvHistory(portfolio), days, ts: now };
+  S.raw.set(addr, r); return r;
+}
+function simOpts() {
+  const v = id => parseFloat($(id).value);
+  const days = parseInt($('s_days').value);
+  return { capital: v('s_cap') || 1000, target: v('s_target') || 1000, days, start: Date.now() - days * DAY,
+    feeRate: (v('s_fee') || 0) / 100, slip: (v('s_slip') || 0) / 100, minOrder: v('s_min') || 0, maxLev: v('s_lev') || 10,
+    ignore: new Set($('s_ignore').value.split(/[\s,;]+/).filter(Boolean).map(x => x.toUpperCase())) };
+}
+function runSim(addr, raw, o) {
+  const real = simulateCopy(raw.fills, raw.avH, { ...o, target: o.target });
+  const ideal = simulateCopy(raw.fills, raw.avH, { ...o, ideal: true });
+  return { addr, real, ideal, days: o.days, truncated: raw.fills.length >= CFG.MAX_FILL_PAGES * 2000,
+    daysToTarget: real.hitTs ? (real.hitTs - o.start) / DAY : null };
+}
+
+const SIM_COLS = [
+  { k: 'addr', h: 'Billetera', f: r => walletCell(r.addr, S.watch[r.addr] || (S.metrics.get(r.addr) || {}).name || ''), l: 1, sticky: 1 },
+  { k: 'roi', h: 'Tu copia ROI', v: r => r.real.roi, f: r => fmtPct(r.real.roi), cls: r => cls(r.real.roi) },
+  { k: 'pnl', h: 'Tu PnL', v: r => r.real.pnl, f: r => fmtUsd(r.real.pnl), cls: r => cls(r.real.pnl) },
+  { k: 'ideal', h: 'Copia ideal ROI', v: r => r.ideal.roi, f: r => fmtPct(r.ideal.roi), cls: r => cls(r.ideal.roi) },
+  { k: 'dd', h: 'Tu Max DD', v: r => -r.real.dd, f: r => fmtPct(r.real.dd), cls: r => r.real.dd > 0.4 ? 'neg' : '' },
+  { k: 'hit', h: 'Días a la meta', v: r => r.daysToTarget == null ? -1e9 : -r.daysToTarget, f: r => r.daysToTarget == null ? '<span class="mut">no llegó</span>' : `${r.daysToTarget.toFixed(0)} d` },
+  { k: 'fees', h: 'Fees', v: r => -r.real.fees, f: r => fmtUsd(r.real.fees) },
+  { k: 'copied', h: 'Órdenes', v: r => r.real.copied, f: r => r.real.copied },
+  { k: 'skip', h: 'Omitidas (< mín)', v: r => -r.real.skippedPct, f: r => fmtPct(r.real.skippedPct), cls: r => r.real.skippedPct > 0.3 ? 'warn' : '' },
+  { k: 'flags', h: 'Alertas', f: r => [r.real.wiped ? 'LIQUIDADA' : '', r.real.killed ? `CORTADA ${fmtDate(r.real.killTs)}` : '', r.truncated ? 'Historial truncado' : ''].filter(Boolean).map(x => `<span class="tag">${x}</span>`).join(''), l: 1 },
+];
+function renderSim() {
+  const rows = sortRows([...S.sims.values()], SIM_COLS, S.sortSim);
+  renderTable($('simTable'), SIM_COLS, rows, S.sortSim, renderSim, r => `class="clk" data-addr="${r.addr}"`);
+  $('simTable').querySelectorAll('tbody tr').forEach(tr => tr.onclick = () => showSimDetail(tr.dataset.addr));
+  if (!rows.length) $('simTable').innerHTML = '<tbody><tr><td class="l mut" style="padding:16px">Primero analizá billeteras (pestaña 1 o 2) y después tocá "Simular todas".</td></tr></tbody>';
+}
+function showSimDetail(addr) {
+  const r = S.sims.get(addr); if (!r) return;
+  const o = simOpts();
+  $('simDetail').innerHTML = `<div class="kpis">
+      <div class="kpi"><div class="k">Capital inicial</div><div class="v">${fmtUsd(o.capital)}</div></div>
+      <div class="kpi"><div class="k">Equity final</div><div class="v ${cls(r.real.pnl)}">${fmtUsd(r.real.finalEq)}</div></div>
+      <div class="kpi"><div class="k">Meta +${fmtUsd(o.target)}</div><div class="v">${r.real.hitTs ? fmtDate(r.real.hitTs) : 'no llegó'}</div></div>
+      <div class="kpi"><div class="k">Posiciones abiertas al final</div><div class="v">${r.real.openNow.join(', ') || '—'}</div></div>
+    </div>
+    <div class="mut" style="font-size:12px">${walletCell(addr, '')} · tu equity simulada (${r.days} días)</div>
+    ${lineChart(downsample(r.real.curve, 200), 680, 180, false)}`;
+}
+async function simAll() {
+  if (S.running) return;
+  const addrs = rankingRows().map(m => m.addr);
+  if (!addrs.length) { setStatus('No hay billeteras en el ranking visible'); return; }
+  const o = simOpts(); S.running = true; S.cancel = false; let done = 0;
+  for (const a of addrs) {
+    if (S.cancel) break;
+    setStatus(`Simulando ${++done}/${addrs.length}…`);
+    try { const raw = await getRaw(a, o.days); S.sims.set(a, runSim(a, raw, o)); } catch (e) { console.warn(a, e); }
+    if (done % 3 === 0) renderSim();
+  }
+  S.running = false; renderSim(); setStatus(`Simulación lista: ${S.sims.size} billeteras`);
+}
+
+async function simPlan() {
+  if (S.running) return;
+  const o = simOpts(), src = $('p_src').value, fund = $('p_fund').value, max = parseInt($('p_max').value) || 10;
+  let order;
+  if (src === 'sim') order = [...S.sims.values()].sort((a, b) => b.real.roi - a.real.roi).map(r => r.addr);
+  else if (src === 'score') order = sortRows(rankingRows(), RK_COLS, { key: 'copy', asc: false }).map(m => m.addr);
+  else order = Object.keys(S.watch);
+  order = order.slice(0, max);
+  if (!order.length) { $('planOut').innerHTML = '<div class="mut">No hay billeteras para el plan. Corré el backtest A o agregá billeteras a tu lista.</div>'; return; }
+  S.running = true; const legs = []; let t = o.start, carry = null;
+  try {
+    for (let i = 0; i < order.length && t != null; i++) {
+      setStatus(`Plan: billetera ${i + 1}/${order.length}…`);
+      const raw = await getRaw(order[i], o.days);
+      // la siguiente arranca con: lo que quedó de una cortada (reemplazo) · la meta retirada (modo ganancia) · capital nuevo
+      const legCap = carry != null ? carry : (i > 0 && fund === 'profit' ? o.target : o.capital);
+      const res = simulateCopy(raw.fills, raw.avH, { ...o, capital: legCap, start: t, withdrawOnHit: fund === 'profit' && i < order.length - 1 ? o.target : 0 });
+      const replaced = !res.hitTs && res.killed;            // cortada antes de la meta → su capital pasa a la siguiente
+      legs.push({ addr: order[i], start: t, res, cap: legCap, replacement: carry != null, transferred: replaced });
+      carry = replaced ? res.killedCash : null;
+      t = res.hitTs || (replaced ? res.killTs : null);
+    }
+  } finally { S.running = false; }
+  // curva total = suma de las equities de cada tramo
+  const times = [...new Set(legs.flatMap(l => l.res.curve.map(p => p[0])))].sort((a, b) => a - b);
+  // cash de billeteras cortadas DESPUÉS de su meta queda como reserva (no se pierde)
+  const reserve = (l, ts) => l.res.killed && !l.transferred && ts >= l.res.killTs ? l.res.killedCash : 0;
+  const total = times.map(ts => [ts, sum(legs.map(l => ts < l.start ? 0 : (curveAt(l.res.curve, ts) ?? l.res.curve[0][1]) + reserve(l, ts)))]);
+  const contributed = fund === 'profit' ? o.capital : o.capital * legs.filter((l, i) => i === 0 || !l.replacement).length;
+  const finalTot = sum(legs.map(l => l.res.finalEq + reserve(l, Infinity)));
+  $('planOut').innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><div class="k">Capital aportado</div><div class="v">${fmtUsd(contributed)}</div></div>
+      <div class="kpi"><div class="k">Equity total final</div><div class="v ${cls(finalTot - contributed)}">${fmtUsd(finalTot)}</div></div>
+      <div class="kpi"><div class="k">Resultado</div><div class="v ${cls(finalTot - contributed)}">${fmtPct((finalTot - contributed) / contributed)}</div></div>
+      <div class="kpi"><div class="k">Billeteras activadas</div><div class="v">${legs.length}</div></div>
+    </div>
+    <div class="tw"><table><thead><tr><th class="l">#</th><th class="l">Billetera</th><th>Entra</th><th>Llega a la meta</th><th>Capital</th><th>Equity final</th><th>PnL del tramo</th><th>Max DD</th></tr></thead><tbody>${
+      legs.map((l, i) => `<tr><td class="l">${i + 1}</td><td class="l">${walletCell(l.addr, S.watch[l.addr] || '')}</td><td>${fmtDate(l.start)}</td><td>${l.res.hitTs ? fmtDate(l.res.hitTs) : l.res.killed ? `<span class="neg">cortada ${fmtDate(l.res.killTs)}</span>` : '<span class="mut">todavía no</span>'}</td><td>${fmtUsd(l.cap)}${l.replacement ? ' <span class="tag">reemplazo</span>' : ''}</td><td>${fmtUsd(l.res.finalEq + reserve(l, Infinity))}</td><td class="${cls(l.res.pnl)}">${fmtUsd(l.res.pnl)}</td><td>${fmtPct(l.res.dd)}</td></tr>`).join('')
+    }</tbody></table></div>
+    <h3 style="font-size:14px">Equity total del plan</h3>${lineChart(downsample(total, 200), 680, 180, false)}
+    <div class="mut" style="font-size:11px">${fund === 'profit' ? `Al llegar a la meta se retiran ${fmtUsd(o.target)} de esa billetera para financiar la siguiente; la anterior sigue operando con el resto.` : 'Cada billetera nueva suma capital aportado.'} No incluye funding fees.</div>`;
+  setStatus('Plan simulado');
+}
+
+function setLeaderboard(json) {
+  S.lb = parseLeaderboard(json);
+  S.lbIndex = new Map(S.lb.map(r => [r.addr, r]));
+  $('lbInfo').textContent = `${S.lb.length.toLocaleString('es-CA')} billeteras cargadas · ${new Date().toLocaleTimeString('es-CA')}`;
+  applyFilters();
+}
+function applyFilters() {
+  if (!S.lb.length) { $('lbCount').textContent = 'Cargá el leaderboard primero.'; return; }
+  const f = readFilters();
+  S.lbView = filterLeaderboard(S.lb, f);
+  S.sortLb.key = null;              // respeta el orden del filtro
+  $('lbCount').textContent = `${S.lbView.length.toLocaleString('es-CA')} de ${S.lb.length.toLocaleString('es-CA')} pasan los filtros`;
+  renderLb();
+}
+
+async function loadLeaderboard() {
+  $('btnLoadLb').disabled = true; setStatus('Descargando leaderboard (puede pesar varios MB)…');
+  try {
+    const r = await fetch(CFG.LB_URL);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    setLeaderboard(await r.json()); setStatus('Leaderboard cargado');
+  } catch (e) {
+    $('lbInfo').innerHTML = `<span class="err">No se pudo descargar (${esc(e.message)}). Abrí <a href="${CFG.LB_URL}" target="_blank" rel="noopener">este link</a>, guardá el JSON y cargalo con "cargar JSON manual".</span>`;
+    setStatus('Error al cargar leaderboard');
+  } finally { $('btnLoadLb').disabled = false; }
+}
+
+function parsePaste(text) {
+  const out = [];
+  for (const line of text.split(/\n+/)) {
+    const m = line.match(/0x[a-fA-F0-9]{40}/); if (!m) continue;
+    const name = line.replace(m[0], '').replace(/^[\s\-–:,|]+|[\s\-–:,|]+$/g, '').trim();
+    out.push({ addr: m[0].toLowerCase(), name });
+  }
+  return out;
+}
+
+function exportCsv() {
+  const rows = sortRows(rankingRows(), RK_COLS, S.sortRk);
+  const cols = ['addr', 'name', 'copy', 'aggr', 'av', 'roiD', 'roiW', 'roiM', 'roiA', 'pnlM', 'pnlA', 'wr', 'pf', 'trades', 'tpw', 'avgHold', 'medHold', 'tim', 'avgLev', 'maxLev', 'curLev', 'ddAll', 'dd30', 'weeksPos', 'net90', 'longPct', 'entriesDay', 'p90EntriesDay', 'maxEntriesDay'];
+  const csv = [cols.join(',')].concat(rows.map(m => cols.map(c => {
+    const v = c === 'name' ? (S.watch[m.addr] || m.name || '') : m[c];
+    return typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : (v == null || !Number.isFinite(v) ? '' : +v.toFixed(6));
+  }).join(','))).join('\n');
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `hl-wallets-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  } catch { copyText(csv); }
+}
+
+function init() {
+  // tabs
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === 'tab-' + b.dataset.tab));
+    if (b.dataset.tab === 'ranking') renderRk();
+    if (b.dataset.tab === 'sim') renderSim();
+  });
+  $('btnSimAll').onclick = simAll;
+  $('btnPlan').onclick = simPlan;
+  // presets
+  $('preset').innerHTML = Object.entries(PRESETS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
+  $('preset').onchange = () => { applyPreset($('preset').value); applyFilters(); };
+  applyPreset('copiables');
+  // storage
+  S.watch = store.get('hlws_watch', {});
+  for (const [a, n] of Object.entries(PRESET_WATCH)) if (S.watch[a] === undefined) S.watch[a] = n;
+  saveWatch();
+  for (const m of store.get('hlws_metrics', [])) if (m && m.addr) S.metrics.set(m.addr, m);
+  // botones
+  $('btnLoadLb').onclick = loadLeaderboard;
+  $('lbFile').onchange = async e => { const f = e.target.files[0]; if (!f) return;
+    try { setLeaderboard(JSON.parse(await f.text())); setStatus('Leaderboard cargado desde archivo'); } catch (err) { setStatus('JSON inválido'); } };
+  $('btnApply').onclick = applyFilters;
+  $('btnAnalyzeTop').onclick = () => { const n = Math.max(1, parseInt($('topN').value) || 25);
+    document.querySelector('nav [data-tab=ranking]').click(); runQueue(S.lbView.slice(0, n).map(r => r.addr)); };
+  $('btnAnalyzeSel').onclick = () => { document.querySelector('nav [data-tab=ranking]').click(); runQueue([...S.sel]); };
+  $('btnWatchSel').onclick = () => { for (const a of S.sel) if (S.watch[a] === undefined) S.watch[a] = (S.lbIndex.get(a) || {}).name || ''; saveWatch(); renderLb(); setStatus(`${S.sel.size} agregadas a tu lista`); };
+  $('btnAddPaste').onclick = () => {
+    const items = parsePaste($('pasteBox').value);
+    if (!items.length) { setStatus('No encontré direcciones 0x válidas'); return; }
+    for (const { addr, name } of items) S.watch[addr] = name || S.watch[addr] || '';
+    saveWatch(); $('pasteBox').value = ''; runQueue(items.map(i => i.addr));
+  };
+  $('btnAnalyzeWatch').onclick = () => runQueue(Object.keys(S.watch));
+  $('btnRefresh').onclick = () => runQueue(rankingRows().map(m => m.addr), true);
+  $('btnCancel').onclick = () => { S.cancel = true; setStatus('Cancelando…'); };
+  $('btnCsv').onclick = exportCsv;
+  $('btnCopyAddr').onclick = () => copyText(rankingRows().map(m => m.addr).join('\n'));
+  ['r_onlyWatch', 'r_hideHft', 'r_minScore', 'r_minTrades', 'r_minWr', 'r_maxDd', 'r_maxLev', 'r_minHold', 'r_maxAggr', 'r_minMinor', 'r_maxEntries', 'r_entriesMode', 'r_hideBurned', 'r_maxWorst']
+    .forEach(id => $(id).addEventListener('input', renderRk));
+  $('drawer').onclick = e => { if (e.target.id === 'drawer') $('drawer').classList.remove('on'); };
+  renderRk(); updateLbButtons();
+  $('lbCount').textContent = 'Cargá el leaderboard para empezar.';
+}
+
+if (typeof document !== 'undefined') init();
+</script>
+</body>
+</html>
