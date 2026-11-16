@@ -1,0 +1,25 @@
+name: Analizar billeteras Hyperliquid
+on:
+  push:
+    branches: [hl-wallet-scout]
+    paths-ignore: ['results/**', 'README.md']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/analyze.mjs
+      - name: Guardar resultados
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add results
+          git commit -m "Resultados del análisis [skip ci]" || exit 0
+          git push
