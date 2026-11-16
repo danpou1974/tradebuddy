@@ -355,28 +355,33 @@ function avAt(hist, ts) {
  * Índice de rendimiento ponderado en el tiempo (TWR): cada tramo rinde ΔPnL ÷ capital al inicio del tramo.
  * Inmune a depósitos/retiros. Devuelve [[ts, índice]] arrancando en 1.
  */
-function twrIndex(pnlH, avH) {
-  if (!pnlH || pnlH.length < 2) return [];
-  const idx = [[pnlH[0][0], 1]]; let v = 1;
-  for (let i = 1; i < pnlH.length; i++) {
-    const base = avAt(avH, pnlH[i - 1][0]);
-    if (base >= 100) v *= 1 + Math.max(-1, (num(pnlH[i][1]) - num(pnlH[i - 1][1])) / base);
-    idx.push([pnlH[i][0], v]);
+function twrIndex(pnlH, avH, sinceTs = 0) {
+  if (!pnlH) return [];
+  const pts = pnlH.filter(x => x[0] >= sinceTs);
+  if (pts.length < 2) return [];
+  // capital de referencia: mayor entre inicio y fin del tramo (si depositó dentro del tramo no infla la pérdida);
+  // se ignoran tramos con capital < 2% del máximo de la ventana (cuentas de prueba / casi vacías)
+  const maxAv = Math.max(100, ...pts.map(x => avAt(avH, x[0])));
+  const idx = [[pts[0][0], 1]]; let v = 1;
+  for (let i = 1; i < pts.length; i++) {
+    const base = Math.max(avAt(avH, pts[i - 1][0]), avAt(avH, pts[i][0]));
+    if (base >= Math.max(100, 0.02 * maxAv)) v *= 1 + Math.max(-1, (num(pts[i][1]) - num(pts[i - 1][1])) / base);
+    idx.push([pts[i][0], v]);
   }
   return idx;
 }
 
 /** Max drawdown sobre el índice TWR (fracción 0-1) */
-function maxDrawdown(pnlH, avH) {
-  const idx = twrIndex(pnlH, avH); if (idx.length < 2) return null;
+function maxDrawdown(pnlH, avH, sinceTs = 0) {
+  const idx = twrIndex(pnlH, avH, sinceTs); if (idx.length < 2) return null;
   let peak = -Infinity, dd = 0;
   for (const [, v] of idx) { peak = Math.max(peak, v); if (peak > 0) dd = Math.max(dd, (peak - v) / peak); }
   return Math.min(dd, 1);
 }
 
 /** Detalle del peor drawdown (sobre índice TWR): profundidad, pico/valle y recuperación (null = no recuperó) */
-function ddDetails(pnlH, avH) {
-  const idx = twrIndex(pnlH, avH); if (idx.length < 2) return null;
+function ddDetails(pnlH, avH, sinceTs = 0) {
+  const idx = twrIndex(pnlH, avH, sinceTs); if (idx.length < 2) return null;
   let peak = -Infinity, peakTs = null, best = { dd: 0 };
   for (const [ts, v] of idx) {
     if (v > peak) { peak = v; peakTs = ts; }
@@ -575,7 +580,7 @@ function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now })
     tpw: closed.length / (days / 7),
     avgHold: mean(holds), medHold: median(holds), tim,
     avgLev: levs.length ? mean(levs) : null, maxLev: levs.length ? Math.max(...levs) : null,
-    ddAll: maxDrawdown(pAll && pAll.pnlHistory, avH),
+    ddAll: maxDrawdown(pAll && pAll.pnlHistory, avH, now - 365 * DAY),   // últimos 12 meses
     dd30: maxDrawdown(pM && pM.pnlHistory, pM && pM.accountValueHistory),
     weeksPos, liqs: closed.filter(t => t.liq).length,
     longPct: entries.length ? nLong / entries.length : null,                 // % de entradas en largo
@@ -589,7 +594,7 @@ function computeMetrics({ addr, name, fills, portfolio, state, lb, start, now })
   };
   // Riesgo de cola: mayor pérdida, peor día/semana, rachas, recuperación del DD
   Object.assign(m, tailRisk(closed, avH));
-  m.ddInfo = ddDetails(pAll && pAll.pnlHistory, avH);
+  m.ddInfo = ddDetails(pAll && pAll.pnlHistory, avH, now - 365 * DAY);
   m.payoff = m.avgWin != null && m.avgLoss ? m.avgWin / Math.abs(m.avgLoss) : null;
   m.burned = (m.ddAll || 0) >= 0.6 || m.worstTradePct >= 0.5;   // quemó (o casi) la cuenta alguna vez
   m.coins = topCoins(closed);
@@ -801,7 +806,7 @@ const RK_COLS = [
   { k: 'tim', h: '% en mercado', v: r => r.tim, f: r => fmtPct(r.tim) },
   { k: 'avgLev', h: 'Lev prom', v: r => r.avgLev, f: r => fmtX(r.avgLev) },
   { k: 'curLev', h: 'Lev actual', v: r => r.curLev, f: r => fmtX(r.curLev) },
-  { k: 'ddAll', h: 'Max DD', v: r => r.ddAll, f: r => fmtPct(r.ddAll), cls: r => (r.ddAll || 0) > 0.4 ? 'neg' : '' },
+  { k: 'ddAll', h: 'Max DD 12m', v: r => r.ddAll, f: r => fmtPct(r.ddAll), cls: r => (r.ddAll || 0) > 0.4 ? 'neg' : '' },
   { k: 'worst', h: 'Peor trade', v: r => -(r.worstTradePct || 0), f: r => r.worstTrade ? `${fmtUsd(r.worstTrade.net)} <span class="mut">(${fmtPct(-r.worstTradePct)})</span>` : '—', cls: r => (r.worstTradePct || 0) > 0.15 ? 'neg' : '', tip: 'Mayor pérdida en un solo trade ($ y % de su cuenta)' },
   { k: 'worstWeek', h: 'Peor semana', v: r => -(r.worstWeekPct || 0), f: r => fmtPct(-(r.worstWeekPct || 0)), cls: r => (r.worstWeekPct || 0) > 0.2 ? 'neg' : '' },
   { k: 'streak', h: 'Racha perd.', v: r => -(r.maxLossStreak || 0), f: r => r.maxLossStreak ?? '—', tip: 'Máximo de trades perdedores seguidos' },
@@ -936,7 +941,7 @@ function openDetail(addr) {
     </div>
     ${m.flags.length ? `<div style="margin-bottom:10px">${m.flags.map(f => `<span class="tag">${esc(f)}</span>`).join('')}</div>` : ''}
     <h3 style="font-size:14px">⚠️ Mayor pérdida y riesgo de cola</h3>
-    ${m.burned ? '<div class="card" style="border-color:var(--neg)"><b class="neg">🔥 Esta billetera quemó (o casi) la cuenta: drawdown ≥ 60% o un trade que perdió ≥ 50% del capital. Aunque hoy gane, no conviene copiarla.</b></div>' : ''}
+    ${m.burned ? '<div class="card" style="border-color:var(--neg)"><b class="neg">🔥 Esta billetera quemó (o casi) la cuenta: drawdown ≥ 60% en los últimos 12 meses o un trade que perdió ≥ 50% del capital. Aunque hoy gane, no conviene copiarla.</b></div>' : ''}
     <div class="kpis">
       ${k('Peor trade', m.worstTrade ? `${fmtUsd(m.worstTrade.net)}` : '—', m.worstTrade ? cls(m.worstTrade.net) : '')}
       ${k('Peor trade (% cuenta)', fmtPct(m.worstTradePct), (m.worstTradePct || 0) > 0.15 ? 'neg' : '')}
@@ -945,7 +950,7 @@ function openDetail(addr) {
       ${k('Peor semana', m.worstWeek ? `${fmtUsd(m.worstWeek.net)} <span class="mut" style="font-size:12px">(${fmtPct(-m.worstWeekPct)})</span>` : '—', m.worstWeek ? cls(m.worstWeek.net) : '')}
       ${k('Racha perdedora máx', `${m.maxLossStreak || 0} trades <span class="mut" style="font-size:12px">(${fmtUsd(m.streakLoss)})</span>`)}
       ${k('Payoff (gan./pérd. prom.)', m.payoff == null ? '—' : m.payoff.toFixed(2), m.payoff != null && m.payoff < 1 ? 'warn' : '')}
-      ${k('Max DD histórico', fmtPct(m.ddAll), (m.ddAll || 0) > 0.4 ? 'neg' : '')}
+      ${k('Max DD 12 meses', fmtPct(m.ddAll), (m.ddAll || 0) > 0.4 ? 'neg' : '')}
       ${k('Caída del DD', m.ddInfo && m.ddInfo.fallDays != null ? `${m.ddInfo.fallDays.toFixed(0)} días<div class="mut" style="font-size:11px">${fmtDate(m.ddInfo.peakTs)} → ${fmtDate(m.ddInfo.troughTs)}</div>` : '—')}
       ${k('Recuperación del DD', !m.ddInfo ? '—' : m.ddInfo.recTs == null ? (m.ddInfo.dd > 0 ? '<span class="neg">No recuperó</span>' : '—') : `${m.ddInfo.recDays.toFixed(0)} días`)}
       ${k('Liquidaciones (90d)', m.liqs, m.liqs ? 'neg' : '')}

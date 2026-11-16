@@ -20,7 +20,7 @@ try {
   console.log('leaderboard rows', rows.length);
 } catch (e) { console.log('leaderboard error', e.message); }
 
-const out = [];
+const out = [], raw = {};
 const entries = Object.entries(A.PRESET_WATCH);
 for (const [i, [addr, name]] of entries.entries()) {
   try {
@@ -30,6 +30,7 @@ for (const [i, [addr, name]] of entries.entries()) {
     const f90 = fills.filter(f => f.time >= now - 90 * DAY);
     const m = A.computeMetrics({ addr, name, fills: f90, portfolio, state, lb: lbIndex.get(addr), start: now - 90 * DAY, now });
     const avH = A.mergedAvHistory(portfolio);
+    raw[addr] = portfolio;   // guardado para validar métricas sin re-consultar
     const base = { capital: 1000, target: 1000, feeRate: 0.0005, slip: 0.0005, minOrder: 5, maxLev: 10 };
     const sim = d => { const r = A.simulateCopy(fills, avH, { ...base, start: now - d * DAY });
       return { roi: r.roi, pnl: r.pnl, dd: r.dd, hitDays: r.hitTs ? (r.hitTs - (now - d * DAY)) / DAY : null, skippedPct: r.skippedPct, copied: r.copied, wiped: r.wiped }; };
@@ -45,6 +46,7 @@ for (const [i, [addr, name]] of entries.entries()) {
 }
 
 fs.mkdirSync('results', { recursive: true });
+fs.writeFileSync('results/portfolios.json', JSON.stringify(raw));
 fs.writeFileSync('results/analysis.json', JSON.stringify({ generated: new Date(now).toISOString(), wallets: out }));
 const cols = ['name', 'addr', 'copy', 'aggr', 'av', 'roiW', 'roiM', 'roiA', 'pnlM', 'pnlA', 'wr', 'pf', 'payoff', 'trades', 'tpw', 'medHold', 'tim', 'avgLev', 'curLev',
   'ddAll', 'worstTradePct', 'worstWeekPct', 'maxLossStreak', 'longPct', 'entriesDay', 'maxEntriesDay', 'weeksPos', 'liqs', 'burned', 'flags', 'sim90', 'sim180', 'error'];
