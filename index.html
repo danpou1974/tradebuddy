@@ -1174,6 +1174,9 @@ async function loadServerResults() {
     }
     if (n) { saveMetrics(); renderRk(); }
     $('progTxt').textContent = `Análisis del servidor: ${fmtDate(ts)} · ${d.wallets.length} billeteras`;
+    // abrir directo en el ranking de mi lista, ordenado por score de copia
+    $('r_onlyWatch').checked = true; S.sortRk = { key: 'copy', asc: false };
+    document.querySelector('nav [data-tab=ranking]').click();
     setStatus('Resultados del servidor cargados');
   } catch { /* sin resultados publicados: modo normal */ }
 }
