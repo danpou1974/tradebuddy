@@ -1,0 +1,19 @@
+name: Volcar trades para análisis de sistema
+on:
+  push:
+    branches: [hl-wallet-scout]
+    paths: ['scripts/trades_dump.mjs']
+permissions:
+  contents: write
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: node scripts/trades_dump.mjs
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add results && git commit -m "trades dump [skip ci]" && git pull --rebase && git push
