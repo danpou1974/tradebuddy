@@ -199,6 +199,7 @@
       <label class="f">Slippage / retraso (%)<input type="number" id="s_slip" value="0.05" step="0.01"></label>
       <label class="f">Orden mínima (USDT)<input type="number" id="s_min" value="5"></label>
       <label class="f">Apalancamiento total máx (×)<input type="number" id="s_lev" value="10"></label>
+      <label class="chk"><input type="checkbox" id="s_pionex" checked> Solo monedas que existen en Pionex</label>
       <label class="f">Monedas a ignorar (no listadas en Pionex)<input type="text" id="s_ignore" placeholder="ej: kPEPE, PURR"></label>
     </div>
   </div>
@@ -439,6 +440,17 @@ function downsample(arr, n = 150) {
   return out;
 }
 
+/** Moneda de Hyperliquid → base de Pionex (null = mercado exclusivo de HL: xyz:, mkts:, @spot…) */
+function pionexBase(coin) {
+  if (!coin || coin.includes(':') || coin.startsWith('@')) return null;
+  return (/^k[A-Z]/.test(coin) ? coin.slice(1) : coin).toUpperCase();   // kPEPE = 1000 PEPE
+}
+/** ¿Se puede operar esta moneda en Pionex? allow = Set de bases de futuros de Pionex */
+function onPionex(coin, allow) {
+  const b = pionexBase(coin); if (!b) return false;
+  return allow.has(b) || allow.has('1000' + b) || allow.has('1000000' + b);
+}
+
 /** Une historiales de valor de cuenta (allTime + month + week + day) para más resolución reciente */
 function mergedAvHistory(portfolio) {
   const P = Object.fromEntries(portfolio || []), m = new Map();
@@ -455,7 +467,7 @@ function mergedAvHistory(portfolio) {
  */
 function simulateCopy(fills, avH, opts) {
   const EPS = 1e-12;
-  const o = Object.assign({ feeRate: 0.0005, slip: 0.0005, minOrder: 5, maxLev: 10, ignore: new Set(), target: null, withdrawOnHit: 0, killDD: null, ideal: false }, opts);
+  const o = Object.assign({ feeRate: 0.0005, slip: 0.0005, minOrder: 5, maxLev: 10, ignore: new Set(), target: null, withdrawOnHit: 0, killDD: null, ideal: false, allow: null }, opts);
   if (o.ideal) { o.feeRate = 0; o.slip = 0; o.minOrder = 0; o.maxLev = Infinity; o.killDD = null; }
   const fs = fills.filter(f => /Long|Short/.test(f.dir || '') && f.time >= o.start).sort((a, b) => a.time - b.time || (a.tid || 0) - (b.tid || 0));
   let cash = o.capital, fees = 0, copied = 0, skipped = 0, wiped = false, hitTs = null, withdrawn = 0;
@@ -484,6 +496,7 @@ function simulateCopy(fills, avH, opts) {
     const theirEnd = st + (f.side === 'B' ? num(f.sz) : -num(f.sz));
     last.set(coin, px);
     if (o.ignore.has(coin.toUpperCase())) continue;
+    if (o.allow && !onPionex(coin, o.allow)) continue;              // solo monedas operables en Pionex
     if (!synced.has(coin)) { if (Math.abs(st) > 1e-9) continue; synced.add(coin); }
     const eq = equity();
     if (eq <= 0) { wiped = true; break; }
@@ -812,6 +825,7 @@ const RK_COLS = [
   { k: 'streak', h: 'Racha perd.', v: r => -(r.maxLossStreak || 0), f: r => r.maxLossStreak ?? '—', tip: 'Máximo de trades perdedores seguidos' },
   { k: 'payoff', h: 'Payoff', v: r => r.payoff, f: r => r.payoff == null ? '—' : r.payoff.toFixed(2), tip: 'Ganancia promedio ÷ pérdida promedio. <1 con WR alto = deja correr pérdidas' },
   { k: 'weeksPos', h: 'Sem. +', v: r => r.weeksPos, f: r => fmtPct(r.weeksPos), tip: '% de semanas con PnL positivo (90d)' },
+  { k: 'pxShare', h: '% operable Pionex', v: r => r.pionexShare, f: r => r.pionexShare == null ? '—' : fmtPct(r.pionexShare), cls: r => r.pionexShare != null && r.pionexShare < 0.8 ? 'warn' : '', tip: '% del volumen de sus trades en monedas que existen como futuro en Pionex' },
   { k: 'sim180', h: 'Copia 1000 · 180d', v: r => r.sim180 ? r.sim180.roi : null, f: r => r.sim180 ? fmtPct(r.sim180.roi) : '—', cls: r => r.sim180 ? cls(r.sim180.roi) : '', tip: 'Tu resultado copiando con 1000 USDT los últimos 180 días (fees, slippage y mínimos incluidos)' },
   { k: 'hit', h: 'Días a +1000', v: r => r.sim180 && r.sim180.hitDays != null ? -r.sim180.hitDays : -1e9, f: r => !r.sim180 ? '—' : r.sim180.hitDays == null ? '<span class="mut">no llegó</span>' : `${r.sim180.hitDays.toFixed(0)} d` },
   { k: 'skipSim', h: 'Órdenes omitidas', v: r => r.sim180 ? -r.sim180.skippedPct : null, f: r => r.sim180 ? fmtPct(r.sim180.skippedPct) : '—', cls: r => r.sim180 && r.sim180.skippedPct > 0.3 ? 'warn' : '', tip: '% de órdenes por debajo del mínimo de 5 USDT con tu capital' },
@@ -1011,6 +1025,7 @@ function simOpts() {
   const days = parseInt($('s_days').value);
   return { capital: v('s_cap') || 1000, target: v('s_target') || 1000, days, start: Date.now() - days * DAY,
     feeRate: (v('s_fee') || 0) / 100, slip: (v('s_slip') || 0) / 100, minOrder: v('s_min') || 0, maxLev: v('s_lev') || 10,
+    allow: $('s_pionex').checked && S.pionex ? S.pionex : null,
     ignore: new Set($('s_ignore').value.split(/[\s,;]+/).filter(Boolean).map(x => x.toUpperCase())) };
 }
 function runSim(addr, raw, o) {
@@ -1163,6 +1178,7 @@ function exportCsv() {
 /** Carga el último análisis corrido en GitHub Actions (results/analysis.json, mismo origen) */
 async function loadServerResults() {
   try {
+    try { const px = await (await fetch('results/pionex_symbols.json', { cache: 'no-store' })).json(); S.pionex = new Set(px.bases); } catch { /* sin lista */ }
     const r = await fetch('results/analysis.json', { cache: 'no-store' });
     if (!r.ok) return;
     const d = await r.json(), ts = Date.parse(d.generated);
